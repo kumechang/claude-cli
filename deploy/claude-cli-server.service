@@ -1,0 +1,19 @@
+[Unit]
+Description=claude-cli HTTP server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=claude
+WorkingDirectory=/opt/claude-cli
+EnvironmentFile=/etc/claude-cli-server.env
+ExecStart=/usr/bin/node src/server.js
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/claude-cli/queue /srv/workspace /home/claude/.claude
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
