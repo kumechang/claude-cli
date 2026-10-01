@@ -34,19 +34,8 @@ curl -X POST localhost:3000/projects/alpha/run -H "Authorization: Bearer $API_TO
 curl localhost:3000/projects/alpha/jobs/<id> -H "Authorization: Bearer $API_TOKEN"   # queued/running/done/failed
 ```
 
-## Ubuntu (26.04 LTS 想定) セットアップ
-```bash
-sudo apt update && sudo apt install -y nodejs npm git   # node -v で 20+ を確認
-sudo npm install -g @anthropic-ai/claude-code
-sudo useradd -m -s /usr/sbin/nologin claude
-sudo -u claude -H claude                                # 初回ログイン、または env に ANTHROPIC_API_KEY
-sudo git clone <this repo> /opt/claude-cli
-sudo mkdir -p /opt/claude-cli/queue /srv/workspace && sudo chown -R claude: /opt/claude-cli/queue /srv/workspace
-sudo install -m600 .env.example /etc/claude-cli-server.env   # 値を編集
-sudo cp projects.example.json /opt/claude-cli/projects.json   # 案件を編集
-sudo cp deploy/claude-cli-server.service /etc/systemd/system/
-sudo systemctl enable --now claude-cli-server
-```
+## サーバー設定・自動デプロイ
+Ubuntu への初期設定と、`main` への push で自動反映する手順は [docs/SETUP.md](docs/SETUP.md) を参照。
 任意の環境変数: `PORT` `QUEUE_DIR` `PROJECTS_FILE` `CLAUDE_TIMEOUT_MS`
 
 ## セキュリティ注意

@@ -78,5 +78,18 @@ function listen() {
   });
 }
 
-if (require.main === module) listen();
+if (require.main === module) {
+  listen();
+  let closing = false;
+  const graceful = async (sig) => {
+    if (closing) return;
+    closing = true;
+    console.log(`${sig}: 新規受付を停止し、実行中のジョブの完了を待ちます`);
+    server.close();
+    health.stop();
+    await jobs.shutdown(); // 未実施は pending に残り、次回起動時に再開される
+    process.exit(0);
+  };
+  for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => graceful(sig));
+}
 module.exports = { server, listen };

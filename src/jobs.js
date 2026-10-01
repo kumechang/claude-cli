@@ -20,6 +20,8 @@ const health = require('./health');
 const sub = (project, name) => path.join(config.queueDir, project, name);
 
 let workerRunning = false;
+let stopping = false;
+let workerDone = Promise.resolve();
 let current = null; // "<project>/<id>"
 
 async function enqueue(project, prompt) {
@@ -44,9 +46,9 @@ async function listPending() {
 }
 
 function start() {
-  if (workerRunning) return;
+  if (workerRunning || stopping) return;
   workerRunning = true;
-  loop()
+  workerDone = loop()
     .catch((e) => console.error('worker error:', e))
     .finally(() => {
       workerRunning = false;
@@ -57,7 +59,7 @@ function start() {
 
 async function loop() {
   for (;;) {
-    if (!health.canRun()) return; // 認証切れの間は pending に残したまま停止(復旧後に再開)
+    if (stopping || !health.canRun()) return; // 認証切れの間は pending に残したまま停止(復旧後に再開)
     const [next] = await listPending();
     if (!next) return;
     await processOne(config.projects[next.project], next.id);
@@ -114,4 +116,10 @@ async function status(project, id) {
   return null;
 }
 
-module.exports = { enqueue, status, start, isRunning: () => workerRunning };
+/** 実行中の1件だけ完了を待ってワーカーを止める(デプロイ時の再起動で処理が途切れないように)。 */
+async function shutdown() {
+  stopping = true;
+  await workerDone;
+}
+
+module.exports = { enqueue, status, start, shutdown, isRunning: () => workerRunning };

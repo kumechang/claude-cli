@@ -6,13 +6,16 @@ Wants=network-online.target
 [Service]
 User=claude
 WorkingDirectory=/opt/claude-cli
-EnvironmentFile=/etc/claude-cli-server.env
+EnvironmentFile=/etc/claude-cli-server/env
 ExecStart=/usr/bin/node src/server.js
 Restart=on-failure
+# 再起動時は実行中のジョブの完了を待つ(最大 TimeoutStopSec)
+KillSignal=SIGTERM
+TimeoutStopSec=15min
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/opt/claude-cli/queue /srv/workspace /home/claude/.claude
+ReadWritePaths=/var/lib/claude-cli /srv/workspace /home/claude
 PrivateTmp=true
 
 [Install]
