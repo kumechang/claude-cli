@@ -1,0 +1,15 @@
+{
+  "projects": {
+    "alpha": {
+      "workDir": "/srv/workspace/alpha",
+      "claudeArgs": ["--permission-mode", "acceptEdits"],
+      "handlers": [
+        { "type": "github", "repo": "owner/alpha-results", "branch": "main", "dir": "results", "tokenEnv": "GITHUB_TOKEN_ALPHA" }
+      ]
+    },
+    "beta": {
+      "workDir": "/srv/workspace/beta",
+      "handlers": []
+    }
+  }
+}

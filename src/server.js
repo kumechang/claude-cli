@@ -4,6 +4,7 @@ const http = require('node:http');
 const crypto = require('node:crypto');
 const config = require('./config');
 const jobs = require('./jobs');
+const { validate: validateHandlers } = require('./handlers');
 
 const send = (res, code, obj) => {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -37,7 +38,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url === '/healthz') return send(res, 200, { ok: true, workerRunning: jobs.isRunning() });
     if (!authorized(req)) return send(res, 401, { error: 'unauthorized' });
 
-    if (req.method === 'POST' && req.url === '/run') {
+    const run = req.method === 'POST' && req.url.match(/^\/projects\/([^/]+)\/run$/);
+    if (run) {
+      const project = run[1];
+      if (!Object.hasOwn(config.projects, project)) return send(res, 404, { error: 'unknown project' });
       let body;
       try {
         body = JSON.parse(await readBody(req));
@@ -48,13 +52,14 @@ const server = http.createServer(async (req, res) => {
       if (typeof body.prompt !== 'string' || !body.prompt.trim()) {
         return send(res, 400, { error: '"prompt" (string) is required' });
       }
-      const id = await jobs.enqueue(body.prompt);
-      return send(res, 202, { id, status: 'queued', statusUrl: `/jobs/${id}` });
+      const id = await jobs.enqueue(project, body.prompt);
+      return send(res, 202, { project, id, status: 'queued', statusUrl: `/projects/${project}/jobs/${id}` });
     }
 
-    const m = req.method === 'GET' && req.url.match(/^\/jobs\/([\w-]+)$/);
+    const m = req.method === 'GET' && req.url.match(/^\/projects\/([^/]+)\/jobs\/([\w-]+)$/);
     if (m) {
-      const job = await jobs.status(m[1]);
+      if (!Object.hasOwn(config.projects, m[1])) return send(res, 404, { error: 'unknown project' });
+      const job = await jobs.status(m[1], m[2]);
       return job ? send(res, 200, job) : send(res, 404, { error: 'not found' });
     }
     send(res, 404, { error: 'not found' });
@@ -64,6 +69,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 function listen() {
+  validateHandlers(config.projects);
   return server.listen(config.port, () => {
     console.log(`listening on :${config.port}`);
     jobs.start(); // 前回の未実施プロンプトが残っていれば処理再開(空なら即停止)

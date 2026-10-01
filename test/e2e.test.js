@@ -24,9 +24,12 @@ test('POST /run -> claude 実行 -> ファイル保存 -> GitHub API push', asyn
   }).listen(0);
   await new Promise((r) => gh.once('listening', r));
 
+  fs.writeFileSync(path.join(tmp, 'projects.json'), JSON.stringify({ projects: {
+    alpha: { workDir: tmp, handlers: [{ type: 'github', repo: 'o/alpha', apiUrl: `http://127.0.0.1:${gh.address().port}` }] },
+    beta: { workDir: tmp, handlers: [] },
+  } }));
   Object.assign(process.env, {
-    API_TOKEN: 't', GITHUB_TOKEN: 'g', GITHUB_REPO: 'o/r', PORT: '0',
-    GITHUB_API_URL: `http://127.0.0.1:${gh.address().port}`,
+    API_TOKEN: 't', GITHUB_TOKEN: 'g', PORT: '0', PROJECTS_FILE: path.join(tmp, 'projects.json'),
     CLAUDE_BIN: fakeClaude, QUEUE_DIR: path.join(tmp, 'queue'),
   });
   const { server, listen } = require('../src/server');
@@ -35,25 +38,34 @@ test('POST /run -> claude 実行 -> ファイル保存 -> GitHub API push', asyn
   const base = `http://127.0.0.1:${server.address().port}`;
   const H = { Authorization: 'Bearer t', 'Content-Type': 'application/json' };
 
-  assert.strictEqual((await fetch(`${base}/run`, { method: 'POST' })).status, 401);
-  const r = await fetch(`${base}/run`, { method: 'POST', headers: H, body: JSON.stringify({ prompt: 'hello' }) });
+  assert.strictEqual((await fetch(`${base}/projects/alpha/run`, { method: 'POST' })).status, 401);
+  assert.strictEqual((await fetch(`${base}/projects/nope/run`, { method: 'POST', headers: H, body: '{"prompt":"x"}' })).status, 404);
+  assert.strictEqual((await fetch(`${base}/projects/..%2Fx/run`, { method: 'POST', headers: H, body: '{"prompt":"x"}' })).status, 404);
+  const r = await fetch(`${base}/projects/alpha/run`, { method: 'POST', headers: H, body: JSON.stringify({ prompt: 'hello' }) });
   assert.strictEqual(r.status, 202);
   const { id } = await r.json();
 
   const q = path.join(tmp, 'queue');
   let job;
   for (let i = 0; i < 50; i++) {
-    job = await (await fetch(`${base}/jobs/${id}`, { headers: H })).json();
-    if (job.status === 'done' && job.github) break;
+    job = await (await fetch(`${base}/projects/alpha/jobs/${id}`, { headers: H })).json();
+    if (job.status === 'done' && job.handlers) break;
     await new Promise((r) => setTimeout(r, 100));
   }
   assert.strictEqual(job.status, 'done', JSON.stringify(job));
-  assert.match(fs.readFileSync(path.join(q, 'done', `${id}.md`), 'utf8'), /echo: hello/);
-  assert.deepStrictEqual(fs.readdirSync(path.join(q, 'pending')), []); // 未実施は空
+  assert.match(fs.readFileSync(path.join(q, 'alpha', 'done', `${id}.md`), 'utf8'), /echo: hello/);
+  assert.deepStrictEqual(fs.readdirSync(path.join(q, 'alpha', 'pending')), []); // 未実施は空
   await new Promise((r) => setTimeout(r, 100));
   assert.strictEqual((await (await fetch(`${base}/healthz`)).json()).workerRunning, false); // 空で停止
   assert.strictEqual(puts.length, 1);
   assert.match(Buffer.from(puts[0].body.content, 'base64').toString(), /echo: hello/);
+
+  // 別案件(handlers なし)は別フォルダに保存され、push されない
+  const rb = await fetch(`${base}/projects/beta/run`, { method: 'POST', headers: H, body: JSON.stringify({ prompt: 'b' }) });
+  const bid = (await rb.json()).id;
+  for (let i = 0; i < 50 && !fs.existsSync(path.join(q, 'beta', 'done', `${bid}.meta.json`)); i++) await new Promise((r) => setTimeout(r, 100));
+  assert.ok(fs.existsSync(path.join(q, 'beta', 'done', `${bid}.md`)));
+  assert.strictEqual(puts.length, 1);
 
   server.closeAllConnections(); server.close(); gh.closeAllConnections(); gh.close();
 });
