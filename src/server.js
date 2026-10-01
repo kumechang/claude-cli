@@ -4,6 +4,7 @@ const http = require('node:http');
 const crypto = require('node:crypto');
 const config = require('./config');
 const jobs = require('./jobs');
+const health = require('./health');
 const { validate: validateHandlers } = require('./handlers');
 
 const send = (res, code, obj) => {
@@ -35,7 +36,7 @@ function readBody(req) {
 
 const server = http.createServer(async (req, res) => {
   try {
-    if (req.method === 'GET' && req.url === '/healthz') return send(res, 200, { ok: true, workerRunning: jobs.isRunning() });
+    if (req.method === 'GET' && req.url === '/healthz') return send(res, 200, { ok: true, workerRunning: jobs.isRunning(), claude: (({ ok, kind, checkedAt }) => ({ ok, kind, checkedAt }))(health.snapshot()) });
     if (!authorized(req)) return send(res, 401, { error: 'unauthorized' });
 
     const run = req.method === 'POST' && req.url.match(/^\/projects\/([^/]+)\/run$/);
@@ -72,6 +73,7 @@ function listen() {
   validateHandlers(config.projects);
   return server.listen(config.port, () => {
     console.log(`listening on :${config.port}`);
+    health.start({ recover: jobs.start });
     jobs.start(); // 前回の未実施プロンプトが残っていれば処理再開(空なら即停止)
   });
 }

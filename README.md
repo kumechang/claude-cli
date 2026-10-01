@@ -13,8 +13,16 @@ HTTP で受け取ったプロンプトをサーバーの `claude` CLI(`claude -p
 案件は `projects.json`(`projects.example.json` 参照)で定義。案件ごとに `workDir`・`claudeArgs`・`timeoutMs`・`handlers` を持ちます。
 `handlers` は配列で、複数指定すると順に実行され、1つが失敗しても他と実行結果には影響しません(エラーは meta に記録)。未定義の案件名は 404。
 
-- 組み込み: `github`(`repo` `branch` `dir` `tokenEnv` — 案件ごとに別リポジトリ/別トークン可)
-- 追加方法(例: メール送信): `src/handlers/email.js` に `async ({ project, id, prompt, result, markdown, options }) => meta` を作り、`src/handlers/index.js` の `registry` に1行足す。`projects.json` で `{ "type": "email", "to": "..." }` と指定。
+- 組み込み: `email`(`to` `subject` — 結果をメール送信。SMTP 設定は上記)、`github`(`repo` `branch` `dir` `tokenEnv` — 案件ごとに別リポジトリ/別トークン可)
+- 追加方法(独自ハンドラ): `src/handlers/<type>.js` に `async ({ project, id, prompt, result, markdown, options }) => meta` を作り、`src/handlers/index.js` の `registry` に1行足す。
+
+## claude CLI の認証ヘルスチェック
+起動時と30分ごと(`HEALTHCHECK_INTERVAL_MS`、0 で無効)に、最小のプロンプトを実際に実行して認証を確認します(`claude auth status` はローカル状態しか見ず、失効したトークンを検出できないため)。
+- 異常になったら `ADMIN_EMAIL` にメール。異常が続く間は24時間ごと(`HEALTHCHECK_REMIND_MS`)に再通知、復旧したら復旧メール。
+- 認証切れの間はワーカーを止め、プロンプトは `pending` に残します(失敗扱いにしない)。復旧を検知すると自動で再開します。ジョブ実行中に認証エラーを検知した場合も同様です。
+- `GET /healthz`(認証不要)で `claude: {ok, kind, checkedAt}` を確認できます(エラー詳細は含みません)。
+- 復旧は管理者がサーバーで `claude auth login` をやり直す必要があります(人手が必要)。`ANTHROPIC_API_KEY` での運用なら期限切れが起きにくく、安定します。
+- メール送信は内蔵の SMTP クライアントを使います: `SMTP_HOST` `SMTP_PORT`(587) `SMTP_SECURE`(465 向けに true) `SMTP_USER` `SMTP_PASS` `MAIL_FROM` `ADMIN_EMAIL`(カンマ区切りで複数可)。`HEALTHCHECK_ARGS` で軽量モデル指定なども可。
 
 ## 認証
 全エンドポイント(`/healthz` 除く)で `Authorization: Bearer $API_TOKEN` が必須。不一致は 401。トークンは定数時間比較。`API_TOKEN` 未設定では起動しない。

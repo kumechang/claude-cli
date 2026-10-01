@@ -8,6 +8,7 @@
  */
 const registry = {
   github: require('./github'),
+  email: require('./email'),
 };
 
 async function runHandlers(project, ctx) {

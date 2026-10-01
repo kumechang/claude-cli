@@ -15,6 +15,7 @@ const crypto = require('node:crypto');
 const config = require('./config');
 const { runClaude } = require('./claude');
 const { runHandlers } = require('./handlers');
+const health = require('./health');
 
 const sub = (project, name) => path.join(config.queueDir, project, name);
 
@@ -56,6 +57,7 @@ function start() {
 
 async function loop() {
   for (;;) {
+    if (!health.canRun()) return; // 認証切れの間は pending に残したまま停止(復旧後に再開)
     const [next] = await listPending();
     if (!next) return;
     await processOne(config.projects[next.project], next.id);
@@ -84,6 +86,11 @@ async function processOne(project, id) {
     const meta = { finishedAt: new Date().toISOString(), handlers };
     await fs.writeFile(path.join(done, `${id}.meta.json`), JSON.stringify(meta, null, 2));
   } catch (e) {
+    if (health.isAuthError(e.message)) {
+      // 認証切れ: 失敗扱いにせず pending に残し、管理者に通知してワーカーを止める
+      await health.reportFailure(e.message);
+      return;
+    }
     const failed = sub(project.name, 'failed');
     await fs.mkdir(failed, { recursive: true });
     await fs.writeFile(path.join(failed, `${id}.error.txt`), e.message);
