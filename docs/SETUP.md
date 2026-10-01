@@ -51,7 +51,7 @@ CLAUDE_CODE_OAUTH_TOKEN=<手順 4>
 sudo -u claude -H claude setup-token     # 表示された URL を手元のブラウザで開いて承認 → トークンが出力される
 ```
 出力されたトークンを `/etc/claude-cli-server/env` の `CLAUDE_CODE_OAUTH_TOKEN=` に設定します。
-API キー運用なら `ANTHROPIC_API_KEY=` を設定してください(こちらが最も切れにくい)。
+本サーバーは Claude API は使わず、claude CLI(サブスクリプション認証)のみを使います。API キーが環境にあっても CLI に渡さない作りです。
 認証が切れた場合はヘルスチェックが `ADMIN_EMAIL` に通知します。
 
 ## 5. 起動と確認

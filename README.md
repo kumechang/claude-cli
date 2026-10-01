@@ -21,7 +21,7 @@ HTTP で受け取ったプロンプトをサーバーの `claude` CLI(`claude -p
 - 異常になったら `ADMIN_EMAIL` にメール。異常が続く間は24時間ごと(`HEALTHCHECK_REMIND_MS`)に再通知、復旧したら復旧メール。
 - 認証切れの間はワーカーを止め、プロンプトは `pending` に残します(失敗扱いにしない)。復旧を検知すると自動で再開します。ジョブ実行中に認証エラーを検知した場合も同様です。
 - `GET /healthz`(認証不要)で `claude: {ok, kind, checkedAt}` を確認できます(エラー詳細は含みません)。
-- 復旧は管理者がサーバーで `claude auth login` をやり直す必要があります(人手が必要)。`ANTHROPIC_API_KEY` での運用なら期限切れが起きにくく、安定します。
+- 復旧は管理者がサーバーで `claude auth login` をやり直す必要があります(人手が必要)。長期トークン(`claude setup-token`)を使うと切れにくくなります(docs/SETUP.md 参照)。
 - メール送信は内蔵の SMTP クライアントを使います: `SMTP_HOST` `SMTP_PORT`(587) `SMTP_SECURE`(465 向けに true) `SMTP_USER` `SMTP_PASS` `MAIL_FROM` `ADMIN_EMAIL`(カンマ区切りで複数可)。`HEALTHCHECK_ARGS` で軽量モデル指定なども可。
 
 ## 認証

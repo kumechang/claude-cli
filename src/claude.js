@@ -10,6 +10,8 @@ function runClaude(prompt, { bin, args, cwd, timeoutMs }) {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, ['-p', '--output-format', 'json', ...args], {
       cwd,
+      // API 課金に切り替わらないよう、API キーは CLI に渡さない(サブスクリプション認証のみ使用)
+      env: Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^ANTHROPIC_(API_KEY|AUTH_TOKEN)$/.test(k))),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
