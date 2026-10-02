@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Ubuntu サーバーの初期設定(root で1回だけ実行。再実行しても安全)。
-#   sudo REPO=owner/repo DEPLOY_PUBKEY="ssh-ed25519 AAAA... gha" bash setup.sh
+#   sudo REPO=kumechang/claude-cli DEPLOY_PUBKEY="ssh-ed25519 AAAA... gha" bash deploy/setup.sh
+#   (REPO はこのプログラム自体のリポジトリ。結果の push 先リポジトリではない)
+#   private の場合は GIT_TOKEN=<読み取り専用 PAT> も渡す
 set -euo pipefail
-: "${REPO:?REPO=owner/repo を指定してください}"
+: "${REPO:?REPO=kumechang/claude-cli のように、プログラムのリポジトリを指定してください}"
 : "${DEPLOY_PUBKEY:?DEPLOY_PUBKEY (GitHub Actions が使う SSH 公開鍵) を指定してください}"
 APP=/opt/claude-cli
 CONF=/etc/claude-cli-server
@@ -56,12 +58,24 @@ install -d -o deploy -g deploy "$APP"
 install -d -m750 -o root -g claude "$CONF"
 install -d -o claude -g claude /var/lib/claude-cli/queue /srv/workspace
 if [ ! -d "$APP/.git" ]; then
-  sudo -u deploy git clone "git@github.com:${REPO}.git" "$APP" || {
-    echo
-    echo "clone に失敗。リポジトリの Settings > Deploy keys に次の公開鍵(Read-only)を登録して再実行してください:"
-    cat /home/deploy/.ssh/id_ed25519.pub
-    exit 1
-  }
+  # 取得方法: 1) public なら匿名 https  2) GIT_TOKEN(読み取り専用 PAT)があれば https+トークン  3) SSH Deploy Key
+  if sudo -u deploy git clone "https://github.com/${REPO}.git" "$APP" 2>/dev/null; then
+    :
+  elif [ -n "${GIT_TOKEN:-}" ]; then
+    sudo -u deploy git config --global credential.helper store
+    printf 'https://x-access-token:%s@github.com\n' "$GIT_TOKEN" | sudo -u deploy tee /home/deploy/.git-credentials >/dev/null
+    chmod 600 /home/deploy/.git-credentials
+    sudo -u deploy git clone "https://github.com/${REPO}.git" "$APP"
+  else
+    sudo -u deploy git clone "git@github.com:${REPO}.git" "$APP" || {
+      echo
+      echo "clone に失敗しました(private リポジトリの可能性)。次のどちらかで再実行してください:"
+      echo "  A) 読み取り専用 PAT を GIT_TOKEN=... として渡す"
+      echo "  B) リポジトリの Settings > Deploy keys に次の公開鍵(Read-only)を登録する:"
+      cat /home/deploy/.ssh/id_ed25519.pub
+      exit 1
+    }
+  fi
 fi
 [ -f "$CONF/env" ] || install -m640 -o root -g claude "$APP/.env.example" "$CONF/env"
 [ -f "$CONF/projects.json" ] || install -m640 -o root -g claude "$APP/projects.example.json" "$CONF/projects.json"

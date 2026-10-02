@@ -25,7 +25,7 @@ GitHub main に push ─▶ Actions(テスト) ─▶ SSH で deploy.sh ─▶ �
 ## 1. VPS の準備(Kagoya)
 - OS は Ubuntu 26.04 LTS を選択し、root または sudo ユーザーで SSH できるようにする。
 - Kagoya のコントロールパネルのパケットフィルタで **22 / 80 / 443** を許可する(80/443 は手順6の HTTPS 用)。アプリの 3000 番は開けない。
-- 以降の手順は `ssh root@<IP>` した状態で実行。
+- 以降の手順は `ssh ubuntu@<IP>` でログインした状態で実行(root 向けと書かれたコマンドは `sudo` 付きで)。
 
 ## 2. デプロイ用 SSH 鍵を作る(手元の PC で)
 ```bash
@@ -33,13 +33,16 @@ ssh-keygen -t ed25519 -N '' -C github-actions-deploy -f ./gha_deploy
 # gha_deploy.pub → サーバー設定で使う / gha_deploy(秘密鍵) → GitHub Secrets に登録
 ```
 
-## 3. サーバーの初期設定(VPS に root で1回だけ)
+## 3. サーバーの初期設定(VPS に `ubuntu` でログインし、`sudo` で1回だけ)
 ```bash
 git clone https://github.com/kumechang/claude-cli.git /tmp/claude-cli && cd /tmp/claude-cli   # private なら setup.sh を scp で送ってもよい
-sudo REPO=kumechang/claude-cli DEPLOY_PUBKEY="$(cat gha_deploy.pub の中身)" bash deploy/setup.sh
+# REPO は「このプログラムのリポジトリ」(結果の保存先 kumechang/mahjong-data などではない)
+# DEPLOY_PUBKEY は手順2で作った gha_deploy.pub の1行(ssh-ed25519 AAAA... で始まる文字列)
+sudo REPO=kumechang/claude-cli DEPLOY_PUBKEY="ssh-ed25519 AAAA...(gha_deploy.pub の中身)" bash deploy/setup.sh
+# private リポジトリの場合は、読み取り専用 PAT も渡す: sudo REPO=... DEPLOY_PUBKEY=... GIT_TOKEN=github_pat_xxx bash deploy/setup.sh
 ```
 `setup.sh` がやること: スワップ作成、Node.js 20+ と claude CLI と jq のインストール、`claude`(実行用)/`deploy`(デプロイ用)ユーザー作成、`/opt/claude-cli` への clone、設定ファイルの雛形配置、systemd 登録、sudoers(`deploy` は `systemctl restart claude-cli-server` のみ可)、ufw(22/80/443)。
-**private リポジトリの場合**: clone に失敗すると公開鍵が表示されます。リポジトリの *Settings → Deploy keys* に **Read-only** で登録して、同じコマンドを再実行してください。
+**取得方法**: public なら匿名 https で自動取得。private なら `GIT_TOKEN`(読み取り専用 PAT)を渡すか、失敗時に表示される公開鍵をリポジトリの *Settings → Deploy keys* に Read-only で登録して再実行。
 
 ## 4. 設定を編集
 `sudo nano /etc/claude-cli-server/env`
