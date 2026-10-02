@@ -1,15 +1,17 @@
 {
   "projects": {
-    "alpha": {
-      "workDir": "/srv/workspace/alpha",
-      "claudeArgs": ["--permission-mode", "acceptEdits"],
-      "handlers": [
-        { "type": "github", "repo": "owner/alpha-results", "branch": "main", "dir": "results", "tokenEnv": "GITHUB_TOKEN_ALPHA" }
-      ]
-    },
-    "beta": {
-      "workDir": "/srv/workspace/beta",
-      "handlers": []
+    "mahjong": {
+      "workDir": "/srv/workspace/mahjong",
+      "instructions": "あなたは American Mahjong(海外)の情報更新担当です。調査結果は必ずカレントディレクトリの outbox/ 配下にファイルとして出力してください(例: outbox/rules.md, outbox/news.json)。outbox 以外は変更しないでください。API キーやパスワード等の秘密情報は絶対に出力に含めないでください。",
+      "claudeArgs": ["--allowedTools", "WebSearch", "WebFetch", "Read", "Write", "Edit", "--permission-mode", "acceptEdits"],
+      "outbox": "outbox",
+      "timeoutMs": 900000,
+      "maxAttempts": 2,
+      "retryDelayMs": 60000,
+      "finalize": {
+        "command": ["/opt/claude-cli/scripts/github-push.sh", "owner/mahjong-data", "main", "data"],
+        "env": { "GH_TOKEN_VAR": "GITHUB_TOKEN_MAHJONG" }
+      }
     }
   }
 }

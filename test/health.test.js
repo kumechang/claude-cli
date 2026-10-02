@@ -6,35 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-// 最小の偽 SMTP サーバー(平文)。受信したメール(DATA)を配列に溜める。
-function fakeSmtp(mails) {
-  return net.createServer((s) => {
-    let data = null;
-    let buf = '';
-    s.write('220 fake\r\n');
-    s.on('data', (d) => {
-      buf += d;
-      for (;;) {
-        if (data !== null) {
-          const i = buf.indexOf('\r\n.\r\n');
-          if (i < 0) return;
-          mails.push(data + buf.slice(0, i));
-          data = null; buf = buf.slice(i + 5);
-          s.write('250 queued\r\n');
-          continue;
-        }
-        const i = buf.indexOf('\r\n');
-        if (i < 0) return;
-        const line = buf.slice(0, i); buf = buf.slice(i + 2);
-        if (/^EHLO/.test(line)) s.write('250-fake\r\n250 AUTH PLAIN\r\n');
-        else if (/^AUTH/.test(line)) s.write('235 ok\r\n');
-        else if (/^DATA/.test(line)) { data = ''; s.write('354 go\r\n'); }
-        else if (/^QUIT/.test(line)) s.end('221 bye\r\n');
-        else s.write('250 ok\r\n');
-      }
-    });
-  });
-}
+const { fakeSmtp } = require('./helpers');
 
 test('認証切れ → 管理者メール(1回だけ) → ジョブは pending に保留 → 復旧メールで再開', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hc-'));

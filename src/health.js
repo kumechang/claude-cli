@@ -13,7 +13,7 @@
 
 const config = require('./config');
 const { runClaude } = require('./claude');
-const { sendMail } = require('./mailer');
+const { notifyAdmin: notify } = require('./notify');
 
 const AUTH_RE = /not logged in|please run .*login|\/login|unauthori[sz]ed|authenticat|invalid api key|invalid.*(token|credential)|token.*(expired|revoked|invalid)|\b401\b|\b403\b|oauth/i;
 const isAuthError = (msg) => AUTH_RE.test(String(msg));
@@ -24,18 +24,6 @@ let onRecover = () => {};
 let checking = null;
 
 const env = (k, d) => process.env[k] ?? d;
-
-async function notify(subject, text) {
-  const to = env('ADMIN_EMAIL');
-  if (!to) return console.error('ADMIN_EMAIL 未設定のため通知メールを送れません:', subject);
-  try {
-    await sendMail({ to, subject, text });
-  } catch (e) {
-    console.error('通知メール送信失敗:', e.message);
-    return false;
-  }
-  return true;
-}
 
 /** 失敗を記録(ヘルスチェック・ジョブ実行どちらからも呼ぶ)。 */
 async function reportFailure(error) {
@@ -48,7 +36,7 @@ async function reportFailure(error) {
   if (first || remind) {
     const title = kind === 'auth' ? 'claude CLI の認証が切れています' : 'claude CLI のヘルスチェックに失敗しました';
     const sent = await notify(
-      `[claude-cli-server] ${title}`,
+      title,
       `${title}。\n\n発生: ${state.failingSince}\n原因:\n${state.error}\n\n` +
         (kind === 'auth' ? 'サーバーで `claude auth login` をやり直してください。それまで案件のプロンプトは pending に溜まり、復旧後に自動で再開します。\n' : '')
     );
@@ -70,7 +58,7 @@ async function check() {
       const since = state.failingSince;
       Object.assign(state, { ok: true, kind: null, error: null, checkedAt: new Date().toISOString(), failingSince: null, notifiedAt: null });
       if (recovered) {
-        await notify('[claude-cli-server] claude CLI が復旧しました', `ヘルスチェックに成功しました。異常発生: ${since}\n保留中のプロンプトの処理を再開します。`);
+        await notify('claude CLI が復旧しました', `ヘルスチェックに成功しました。異常発生: ${since}\n保留中のプロンプトの処理を再開します。`);
         onRecover();
       }
     } catch (e) {

@@ -10,7 +10,14 @@ CONF=/etc/claude-cli-server
 [ "$(id -u)" = 0 ] || { echo "root で実行してください"; exit 1; }
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y git curl ca-certificates ufw
+apt-get install -y git curl ca-certificates ufw jq
+
+# 1GB RAM 向け: スワップが無ければ 2GB 作る(claude CLI のメモリ不足対策)
+if [ "$(swapon --show --noheadings | wc -l)" = 0 ]; then
+  fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+  grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  sysctl -w vm.swappiness=20 >/dev/null; echo 'vm.swappiness=20' > /etc/sysctl.d/99-swappiness.conf
+fi
 
 # Node.js 20+ (apt の版が古ければ NodeSource 22 にフォールバック)
 node_major() { node -v 2>/dev/null | sed 's/^v//; s/\..*//' || echo 0; }
@@ -65,16 +72,18 @@ install -m644 "$APP/deploy/claude-cli-server.service" /etc/systemd/system/claude
 systemctl daemon-reload
 systemctl enable claude-cli-server
 
-# ファイアウォール(SSH のみ許可。HTTP を公開する場合は TLS 用の 443 を別途許可)
+# ファイアウォール(SSH と、Caddy(HTTPS)用の 80/443 のみ。アプリの 3000 番は閉じたまま)
 ufw allow OpenSSH >/dev/null
+ufw allow 80/tcp >/dev/null
+ufw allow 443/tcp >/dev/null
 ufw --force enable >/dev/null
 
 cat <<MSG
 
 == 初期設定完了 (まだサービスは起動していません) ==
 次の作業(詳細: docs/SETUP.md):
-  1. $CONF/env を編集 (API_TOKEN, SMTP, ADMIN_EMAIL, GitHub トークン)
-  2. $CONF/projects.json を編集
+  1. $CONF/env を編集 (API_TOKEN, SMTP(Gmail アプリパスワード), ADMIN_EMAIL, GitHub トークン)
+  2. $CONF/projects.json を編集 (案件・送信スクリプト)
   3. claude の認証: sudo -u claude -H claude setup-token  → 出力トークンを env の CLAUDE_CODE_OAUTH_TOKEN に設定
   4. sudo systemctl start claude-cli-server
 MSG

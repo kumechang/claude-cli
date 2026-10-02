@@ -3,10 +3,13 @@
 /**
  * 案件ごとのフォルダキュー:
  *   queue/<project>/pending/<id>.md   未実施プロンプト
- *   queue/<project>/done/<id>.md|json 実施済み(プロンプト+結果) / <id>.meta.json にハンドラ結果
- *   queue/<project>/failed/<id>.md    実行失敗(<id>.error.txt 付き。自動リトライしない)
- * ワーカーは全案件の pending を古い順に1件ずつ(同時に claude は1つ)実行し、
- * 全案件の pending が空になったら停止する。新規受信・起動時に pending があれば再開。
+ *   queue/<project>/done/<id>.md|json 実施済み(プロンプト+結果)
+ *   queue/<project>/failed/<id>.md    失敗(<id>.error.txt 付き)。再実行は pending/ に戻すだけ
+ *   queue/<project>/.dirty            「送信待ちの結果がある」印(中身は完了した id の一覧)
+ *
+ * 流れ: リクエスト受信 → pending に保存 → ワーカー起動 → 全案件の pending が空になるまで
+ *       古い順に1件ずつ claude 実行 → 空になったら、結果のある案件ごとに finalize(送信スクリプト)を実行 → 停止
+ * 認証切れの間は pending を残したまま停止(復旧後に再開)。
  */
 
 const fs = require('node:fs/promises');
@@ -14,10 +17,12 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const config = require('./config');
 const { runClaude } = require('./claude');
-const { runHandlers } = require('./handlers');
+const { runFinalize } = require('./finalize');
 const health = require('./health');
+const { notifyAdmin } = require('./notify');
 
 const sub = (project, name) => path.join(config.queueDir, project, name);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let workerRunning = false;
 let stopping = false;
@@ -45,6 +50,14 @@ async function listPending() {
   return all.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
+const dirtyProjects = async () => {
+  const out = [];
+  for (const name of Object.keys(config.projects)) {
+    if (await fs.access(sub(name, '.dirty')).then(() => true, () => false)) out.push(config.projects[name]);
+  }
+  return out;
+};
+
 function start() {
   if (workerRunning || stopping) return;
   workerRunning = true;
@@ -53,59 +66,76 @@ function start() {
     .finally(() => {
       workerRunning = false;
       current = null;
-      console.log('worker stopped: pending is empty');
+      console.log('worker stopped');
     });
 }
 
 async function loop() {
   for (;;) {
-    if (stopping || !health.canRun()) return; // 認証切れの間は pending に残したまま停止(復旧後に再開)
-    const [next] = await listPending();
-    if (!next) return;
-    await processOne(config.projects[next.project], next.id);
+    // 1. 未実施がなくなるまで実行
+    for (;;) {
+      if (stopping || !health.canRun()) return; // 認証切れ/停止要求: pending を残して終了(finalize もしない)
+      const [next] = await listPending();
+      if (!next) break;
+      await processOne(config.projects[next.project], next.id);
+    }
+    // 2. 空になったら、結果のある案件の送信処理
+    for (const project of await dirtyProjects()) {
+      if (stopping) return;
+      current = `${project.name}/finalize`;
+      await runFinalize(project, sub(project.name, ''));
+    }
+    // 3. 送信処理中に新しいプロンプトが届いていれば続行、なければ停止
+    if (!(await listPending()).length) return;
   }
 }
 
 async function processOne(project, id) {
   current = `${project.name}/${id}`;
   const src = path.join(sub(project.name, 'pending'), `${id}.md`);
-  const done = sub(project.name, 'done');
+  const attemptsFile = path.join(sub(project.name, 'pending'), `${id}.attempts`);
   const prompt = await fs.readFile(src, 'utf8');
+  const attempts = Number(await fs.readFile(attemptsFile, 'utf8').catch(() => 0)) + 1;
   try {
     const result = await runClaude(prompt, {
       bin: config.claudeBin,
-      args: project.claudeArgs,
+      args: [...project.claudeArgs, ...(project.instructions ? ['--append-system-prompt', project.instructions] : [])],
       cwd: project.workDir,
       timeoutMs: project.timeoutMs,
     });
     const markdown = `# Prompt\n\n${prompt}\n\n# Result\n\n${result.text}\n`;
+    const done = sub(project.name, 'done');
     await fs.mkdir(done, { recursive: true });
     await fs.writeFile(path.join(done, `${id}.json`), JSON.stringify(result.raw, null, 2));
     await fs.writeFile(path.join(done, `${id}.md`), markdown);
+    await fs.appendFile(sub(project.name, '.dirty'), `${id}\n`); // 送信待ちの印(unlink より先に書く)
     await fs.unlink(src); // 結果保存後に pending から除去 = 実施済みへ移動
-
-    const handlers = await runHandlers(project, { id, prompt, result, markdown });
-    const meta = { finishedAt: new Date().toISOString(), handlers };
-    await fs.writeFile(path.join(done, `${id}.meta.json`), JSON.stringify(meta, null, 2));
+    await fs.unlink(attemptsFile).catch(() => {});
   } catch (e) {
     if (health.isAuthError(e.message)) {
       // 認証切れ: 失敗扱いにせず pending に残し、管理者に通知してワーカーを止める
       await health.reportFailure(e.message);
       return;
     }
+    if (attempts < project.maxAttempts) {
+      // 一時的な失敗かもしれないので、間を置いて同じプロンプトをもう一度
+      await fs.writeFile(attemptsFile, String(attempts));
+      console.error(`[${project.name}] ${id} 失敗 (${attempts}/${project.maxAttempts}): ${e.message}`);
+      await sleep(project.retryDelayMs);
+      return;
+    }
     const failed = sub(project.name, 'failed');
     await fs.mkdir(failed, { recursive: true });
     await fs.writeFile(path.join(failed, `${id}.error.txt`), e.message);
     await fs.rename(src, path.join(failed, `${id}.md`));
+    await fs.unlink(attemptsFile).catch(() => {});
+    await notifyAdmin(`[${project.name}] プロンプトの実行に失敗しました`, `案件: ${project.name}\nid: ${id}\n試行回数: ${attempts}\n\n${e.message}\n\nqueue/${project.name}/failed/ に保存しました。再実行するには ${id}.md を pending/ に戻してください。`);
   }
 }
 
 async function status(project, id) {
   const exists = (p) => fs.access(p).then(() => true, () => false);
-  if (await exists(path.join(sub(project, 'done'), `${id}.md`))) {
-    const meta = await fs.readFile(path.join(sub(project, 'done'), `${id}.meta.json`), 'utf8').then(JSON.parse, () => ({}));
-    return { project, id, status: 'done', ...meta };
-  }
+  if (await exists(path.join(sub(project, 'done'), `${id}.md`))) return { project, id, status: 'done' };
   if (await exists(path.join(sub(project, 'failed'), `${id}.md`))) {
     const error = await fs.readFile(path.join(sub(project, 'failed'), `${id}.error.txt`), 'utf8').catch(() => '');
     return { project, id, status: 'failed', error };

@@ -5,7 +5,6 @@ const crypto = require('node:crypto');
 const config = require('./config');
 const jobs = require('./jobs');
 const health = require('./health');
-const { validate: validateHandlers } = require('./handlers');
 
 const send = (res, code, obj) => {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -36,7 +35,13 @@ function readBody(req) {
 
 const server = http.createServer(async (req, res) => {
   try {
-    if (req.method === 'GET' && req.url === '/healthz') return send(res, 200, { ok: true, workerRunning: jobs.isRunning(), claude: (({ ok, kind, checkedAt }) => ({ ok, kind, checkedAt }))(health.snapshot()) });
+    const u = new URL(req.url, 'http://x');
+    if ((req.method === 'GET' || req.method === 'HEAD') && u.pathname === '/healthz') {
+      // 死活監視(UptimeRobot 等)用。認証不要。通常は 200。?strict=1 なら claude の認証異常時に 503。
+      const { ok, kind, checkedAt } = health.snapshot();
+      const code = u.searchParams.get('strict') && !ok ? 503 : 200;
+      return send(res, code, { ok: true, workerRunning: jobs.isRunning(), claude: { ok, kind, checkedAt } });
+    }
     if (!authorized(req)) return send(res, 401, { error: 'unauthorized' });
 
     const run = req.method === 'POST' && req.url.match(/^\/projects\/([^/]+)\/run$/);
@@ -70,11 +75,10 @@ const server = http.createServer(async (req, res) => {
 });
 
 function listen() {
-  validateHandlers(config.projects);
   return server.listen(config.port, () => {
     console.log(`listening on :${config.port}`);
     health.start({ recover: jobs.start });
-    jobs.start(); // 前回の未実施プロンプトが残っていれば処理再開(空なら即停止)
+    jobs.start(); // 前回の未実施/未送信が残っていれば再開(なければ即停止)
   });
 }
 

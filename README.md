@@ -1,44 +1,51 @@
 # claude-cli-server
 
-HTTP で受け取ったプロンプトをサーバーの `claude` CLI(`claude -p`)で順次実行し、結果をファイルに保存、GitHub API(Contents API)でコミットする。依存パッケージなし(Node.js 20+)。
+HTTP で受けたプロンプトをサーバーの `claude` CLI(`claude -p`、サブスクリプション認証。API は使わない)で順次実行し、
+案件ごとに定義した「送信スクリプト」で最後にデータを送る個人用ツール。依存パッケージなし(Node.js 20+)。
 
 ## 動作
-1. `POST /projects/<案件>/run` でプロンプト受信(Bearer 認証必須)→ `queue/<案件>/pending/<id>.md` に格納
-2. ワーカーが全案件の pending を古い順に1件ずつ実行(`claude` の同時実行は1つ)
-3. 結果を `queue/<案件>/done/<id>.md|json` に保存し pending から除去、その案件に設定された**結果ハンドラ**を実行(結果は `<id>.meta.json`)
-4. 全案件の pending が空になったらワーカーは停止(HTTP 受付は継続。次のリクエストか再起動時に pending があれば再開)
-- 実行失敗したものは `queue/<案件>/failed/` へ(自動リトライしない)
+1. `POST /projects/<案件>/run` でプロンプトを受信(Bearer 認証必須)→ `queue/<案件>/pending/<id>.md` に保存 → ワーカー起動
+2. 全案件の pending が空になるまで、古い順に1件ずつ `claude -p` を実行(同時実行は1つ)。claude は案件の `workDir` で動き、送信したいデータを `outbox/` に出力する
+3. 結果は `queue/<案件>/done/<id>.md|json` に保存(増え続けてよい)
+4. pending が空になったら、結果のあった案件ごとに**送信スクリプト(finalize)を1回だけ**実行 → ワーカー停止(HTTP 受付は継続。次のリクエストで再起動)
+   - 送信前に outbox と結果を**機密情報チェック**。疑わしいものがあれば送信せず管理者にメール
+   - 送信が失敗したら管理者にメールし、次回のワーカー実行時に再試行
 
-## 案件と結果ハンドラ
-案件は `projects.json`(`projects.example.json` 参照)で定義。案件ごとに `workDir`・`claudeArgs`・`timeoutMs`・`handlers` を持ちます。
-`handlers` は配列で、複数指定すると順に実行され、1つが失敗しても他と実行結果には影響しません(エラーは meta に記録)。未定義の案件名は 404。
+呼び出し元は投げっぱなしでよい(202 が返る)。状態確認: `GET /projects/<案件>/jobs/<id>`(queued/running/done/failed)
 
-- 組み込み: `email`(`to` `subject` — 結果をメール送信。SMTP 設定は上記)、`github`(`repo` `branch` `dir` `tokenEnv` — 案件ごとに別リポジトリ/別トークン可)
-- 追加方法(独自ハンドラ): `src/handlers/<type>.js` に `async ({ project, id, prompt, result, markdown, options }) => meta` を作り、`src/handlers/index.js` の `registry` に1行足す。
+## 失敗時の扱い
+- claude の実行失敗は、間を置いて**1回だけ自動リトライ**(`maxAttempts` 既定2、`retryDelayMs` 既定60秒)。それでも失敗なら `queue/<案件>/failed/` に置き、管理者にメール。
+  無制限リトライはしない(サブスクリプションの利用枠を消費し、同じ失敗を繰り返すため)。
+- 手動で再実行したいとき: `failed/<id>.md` を `pending/` に移し、何かリクエストを送る(またはサービス再起動)。
+- 認証切れは失敗扱いにせず、pending に残して停止(下記)。
 
-## claude CLI の認証ヘルスチェック
-起動時と30分ごと(`HEALTHCHECK_INTERVAL_MS`、0 で無効)に、最小のプロンプトを実際に実行して認証を確認します(`claude auth status` はローカル状態しか見ず、失効したトークンを検出できないため)。
-- 異常になったら `ADMIN_EMAIL` にメール。異常が続く間は24時間ごと(`HEALTHCHECK_REMIND_MS`)に再通知、復旧したら復旧メール。
-- 認証切れの間はワーカーを止め、プロンプトは `pending` に残します(失敗扱いにしない)。復旧を検知すると自動で再開します。ジョブ実行中に認証エラーを検知した場合も同様です。
-- `GET /healthz`(認証不要)で `claude: {ok, kind, checkedAt}` を確認できます(エラー詳細は含みません)。
-- 復旧は管理者がサーバーで `claude auth login` をやり直す必要があります(人手が必要)。長期トークン(`claude setup-token`)を使うと切れにくくなります(docs/SETUP.md 参照)。
-- メール送信は内蔵の SMTP クライアントを使います: `SMTP_HOST` `SMTP_PORT`(587) `SMTP_SECURE`(465 向けに true) `SMTP_USER` `SMTP_PASS` `MAIL_FROM` `ADMIN_EMAIL`(カンマ区切りで複数可)。`HEALTHCHECK_ARGS` で軽量モデル指定なども可。
+## 案件(projects.json)
+`projects.example.json` 参照。案件ごとに次を設定:
+- `workDir`: claude の作業ディレクトリ / `instructions`: システムプロンプトへの追記(出力先ルールなど) / `claudeArgs`: `--allowedTools` `--permission-mode` など
+- `outbox`: 送信データの置き場(`workDir` 相対、既定 `outbox`)
+- `finalize.command`: 送信スクリプト(配列。シェルは介さない)。`finalize.env` で追加の環境変数。省略すると送信なし
+  - スクリプトには `PROJECT_NAME` `PROJECT_DIR` `OUTBOX_DIR` `DONE_DIR` `RESULT_IDS` が渡される。終了コード 0 で成功
+  - 汎用スクリプト `scripts/github-push.sh`(GitHub API で outbox をコミット。案件ごとにリポジトリ/ブランチ/トークンを指定可)。メール送信など別の処理にしたい案件は、自作スクリプトを指定する
+- `timeoutMs` `maxAttempts` `retryDelayMs` `secretPatterns`(機密チェックの追加正規表現)
 
-## 認証
-全エンドポイント(`/healthz` 除く)で `Authorization: Bearer $API_TOKEN` が必須。不一致は 401。トークンは定数時間比較。`API_TOKEN` 未設定では起動しない。
+## claude CLI の認証監視
+起動時と30分ごと(`HEALTHCHECK_INTERVAL_MS`、0で無効)に最小のプロンプトを実行して確認します。
+- 異常になったら `ADMIN_EMAIL` にメール(続く間は24時間ごとに再通知)、復旧したら復旧メール
+- 認証切れの間はワーカーを止め、プロンプトは pending に残す(復旧を検知したら自動で再開)
+- 復旧には管理者が `claude setup-token` / `claude auth login` をやり直す必要がある(docs/SETUP.md)
 
-## API
-```
-curl -X POST localhost:3000/projects/alpha/run -H "Authorization: Bearer $API_TOKEN" \
-  -H 'Content-Type: application/json' -d '{"prompt":"README を要約して"}'
-curl localhost:3000/projects/alpha/jobs/<id> -H "Authorization: Bearer $API_TOKEN"   # queued/running/done/failed
-```
+## 認証・セキュリティ
+- `/healthz` 以外は `Authorization: Bearer $API_TOKEN` 必須(定数時間比較)。`API_TOKEN` 未設定では起動しない
+- 公開時は HTTPS 必須(docs/SETUP.md)。トークンが平文で流れると、誰でもサーバー上で claude を動かせてしまう
+- claude には最小限の環境変数しか渡さない(API_TOKEN・SMTP・GitHub トークンなどは見えない)。`ANTHROPIC_API_KEY` も渡さない
+- claude の権限(`--allowedTools` / `--permission-mode`)は案件ごとに必要最小限にする
 
-## サーバー設定・自動デプロイ
-Ubuntu への初期設定と、`main` への push で自動反映する手順は [docs/SETUP.md](docs/SETUP.md) を参照。
-任意の環境変数: `PORT` `QUEUE_DIR` `PROJECTS_FILE` `CLAUDE_TIMEOUT_MS`
+## 死活監視
+`GET /healthz`(認証不要・HEAD 可)が 200 を返せば稼働中。`/healthz?strict=1` は claude の認証が異常のとき 503。UptimeRobot 等に登録する。
 
-## セキュリティ注意
-- 公開時は nginx/Caddy 等で TLS 終端すること(Bearer トークンが平文で流れるため)。
-- claude はサーバー上で任意操作できる。専用ユーザー・専用 `WORK_DIR` で動かし、`CLAUDE_ARGS` の権限モードは最小限に。
-- GitHub トークンは案件ごとに対象リポジトリのみ `contents:write` の fine-grained PAT を推奨。
+## 設定・環境変数
+`PORT` `QUEUE_DIR` `PROJECTS_FILE` `CLAUDE_TIMEOUT_MS`、メール: `ADMIN_EMAIL` `MAIL_FROM` `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASS`、
+ヘルスチェック: `HEALTHCHECK_INTERVAL_MS` `HEALTHCHECK_REMIND_MS` `HEALTHCHECK_ARGS`。
+
+## サーバー設定・自動デプロイ・呼び出し方
+[docs/SETUP.md](docs/SETUP.md) を参照(Ubuntu 初期設定、`main` への push で自動デプロイ、HTTPS、メール、UptimeRobot、GitHub Actions からの呼び出し例)。
