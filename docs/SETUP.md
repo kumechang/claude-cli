@@ -96,7 +96,7 @@ curl https://203-0-113-5.sslip.io/healthz
 sudo systemctl start claude-cli-server
 sudo systemctl status claude-cli-server
 journalctl -u claude-cli-server -f
-curl -XPOST https://203-0-113-5.sslip.io/projects/mahjong/run -H "Authorization: Bearer $API_TOKEN" -H 'Content-Type: application/json' -d '{"prompt":"American Mahjong の最新のルール変更を調べて Markdown にまとめて。保存先: リポジトリ owner/mahjong-data、ブランチ main、フォルダ docs/rules"}'
+curl -XPOST https://203-0-113-5.sslip.io/projects/mahjong/run -H "Authorization: Bearer $API_TOKEN" -H 'Content-Type: application/json' -d '{"prompt":"American Mahjong の最新のルール変更を調べて Markdown にまとめて。保存先: リポジトリ kumechang/mahjong-data、ブランチ main、フォルダ docs/rules"}'
 ls /var/lib/claude-cli/queue/mahjong/done; cat /var/lib/claude-cli/queue/mahjong/finalize.log
 ```
 
@@ -122,7 +122,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: |
-          jq -n --arg p "American Mahjong の最新情報を調べて Markdown にまとめて。保存先: リポジトリ owner/mahjong-data、ブランチ main、フォルダ docs/news" '{prompt:$p}' |
+          jq -n --arg p "American Mahjong の最新情報を調べて Markdown にまとめて。保存先: リポジトリ kumechang/mahjong-data、ブランチ main、フォルダ docs/news" '{prompt:$p}' |
           curl -fsS -X POST "$URL/projects/mahjong/run" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data-binary @-
         env:
           URL: ${{ secrets.CLAUDE_SERVER_URL }}

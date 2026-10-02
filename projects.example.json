@@ -9,7 +9,7 @@
       "retryDelayMs": 60000,
       "finalize": {
         "command": ["/opt/claude-cli/scripts/github-push.sh"],
-        "env": { "GH_TOKEN_VAR": "GITHUB_TOKEN_MAHJONG", "GH_ALLOWED_REPOS": "owner/*" }
+        "env": { "GH_TOKEN_VAR": "GITHUB_TOKEN_MAHJONG", "GH_ALLOWED_REPOS": "kumechang/*" }
       }
     }
   }
