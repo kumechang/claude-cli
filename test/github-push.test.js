@@ -7,9 +7,10 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { tmpdir } = require('./helpers');
 
-test('scripts/github-push.sh: 新規は PUT、変更なしはスキップ、既存は sha 付きで更新', async () => {
+test('scripts/github-push.sh: _target.json の送信先検証、新規は PUT、変更なしはスキップ、既存は sha 付きで更新', async () => {
   const tmp = tmpdir();
   const outbox = path.join(tmp, 'outbox'); fs.mkdirSync(path.join(outbox, 'sub'), { recursive: true });
+  fs.writeFileSync(path.join(outbox, '_target.json'), JSON.stringify({ repo: 'o/r', branch: 'main', dir: 'data' }));
   fs.writeFileSync(path.join(outbox, 'new.json'), '{"a":1}\n');
   fs.writeFileSync(path.join(outbox, 'sub/日本語 file.md'), 'hello\n');
   fs.writeFileSync(path.join(outbox, 'same.txt'), 'same\n');
@@ -34,18 +35,30 @@ test('scripts/github-push.sh: 新規は PUT、変更なしはスキップ、既�
   }).listen(0);
   await new Promise((r) => gh.once('listening', r));
 
-  const r = await new Promise((resolve) => {
-    require('node:child_process').execFile(path.join(__dirname, '../scripts/github-push.sh'), ['o/r', 'main', 'data'], {
-      env: { ...process.env, OUTBOX_DIR: outbox, PROJECT_NAME: 'mj', GH_TOKEN_VAR: 'MYTKN', MYTKN: 'TKN', GITHUB_API_URL: `http://127.0.0.1:${gh.address().port}` },
+  const run = (extra = {}) => new Promise((resolve) => {
+    require('node:child_process').execFile(path.join(__dirname, '../scripts/github-push.sh'), [], {
+      env: { ...process.env, OUTBOX_DIR: outbox, PROJECT_NAME: 'mj', GH_TOKEN_VAR: 'MYTKN', MYTKN: 'TKN', GH_ALLOWED_REPOS: 'o/*', GITHUB_API_URL: `http://127.0.0.1:${gh.address().port}`, ...extra },
     }, (err, stdout, stderr) => resolve({ err, stdout, stderr }));
   });
+  // 許可外のリポジトリ・不正な値は何も送らず失敗する
+  const n0 = puts.length;
+  assert.ok((await run({ GH_ALLOWED_REPOS: 'other/*' })).err, '許可外 repo は拒否');
+  const bad = (t) => { fs.writeFileSync(path.join(outbox, '_target.json'), JSON.stringify(t)); return run(); };
+  assert.ok((await bad({ repo: 'o/r', dir: '../etc' })).err, 'dir の .. は拒否');
+  assert.ok((await bad({ repo: 'o/r', dir: '/abs' })).err, '絶対パスは拒否');
+  assert.ok((await bad({ repo: 'o/r x' })).err, '不正な repo は拒否');
+  assert.ok((await bad({ dir: 'd' })).err, 'repo なしは拒否');
+  assert.strictEqual(puts.length, n0);
+  fs.writeFileSync(path.join(outbox, '_target.json'), JSON.stringify({ repo: 'o/r', branch: 'main', dir: 'data' }));
+
+  const r = await run();
   gh.close();
   assert.ifError(r.err && Object.assign(r.err, { message: r.stderr }));
   const byPath = Object.fromEntries(puts.map((x) => [x.p.replace('/repos/o/r/contents/', ''), x.body]));
-  assert.deepStrictEqual(Object.keys(byPath).sort(), ['data/changed.txt', 'data/new.json', 'data/sub/日本語 file.md']);
+  assert.deepStrictEqual(Object.keys(byPath).sort(), ['data/changed.txt', 'data/new.json', 'data/sub/日本語 file.md'], '_target.json は送らない');
   assert.strictEqual(byPath['data/changed.txt'].sha, 'OLDSHA');
   assert.strictEqual(byPath['data/new.json'].sha, undefined);
   assert.strictEqual(byPath['data/new.json'].branch, 'main');
   assert.strictEqual(Buffer.from(byPath['data/new.json'].content, 'base64').toString(), '{"a":1}\n');
-  assert.match(r.stdout, /unchanged: data\/same.txt/);
+  assert.match(r.stdout, /unchanged: o\/r\/data\/same.txt/);
 });

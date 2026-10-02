@@ -90,6 +90,18 @@ async function loop() {
   }
 }
 
+/** 案件の instructions に、このプロンプト専用の出力先(outbox/<id>/)を足したシステムプロンプト。 */
+function systemPrompt(project, id) {
+  const out = path.relative(project.workDir, path.join(project.outboxDir, id)) || id;
+  return [
+    project.instructions,
+    `【出力先】このタスクで外部へ送るファイルは、必ずカレントディレクトリからの相対パス ${out}/ 配下に出力すること(このディレクトリは自分で作成してよい)。`,
+    '【送信先】プロンプトに「保存(push)先のリポジトリ・格納フォルダ」が書かれている場合は、' + `${out}/_target.json に {"repo":"owner/name","branch":"main","dir":"格納フォルダ"} の形式で書き出すこと(branch 省略時は main、dir は空でもよい)。` +
+      'リポジトリへの送信自体は行わないこと(後続の処理が _target.json を読んで送信する)。送信先の記載がなければ _target.json は作らない。',
+    'パスワード・API キー・トークンなどの秘密情報は、出力ファイルに絶対に含めないこと。',
+  ].filter(Boolean).join('\n\n');
+}
+
 async function processOne(project, id) {
   current = `${project.name}/${id}`;
   const src = path.join(sub(project.name, 'pending'), `${id}.md`);
@@ -99,7 +111,7 @@ async function processOne(project, id) {
   try {
     const result = await runClaude(prompt, {
       bin: config.claudeBin,
-      args: [...project.claudeArgs, ...(project.instructions ? ['--append-system-prompt', project.instructions] : [])],
+      args: [...project.claudeArgs, '--append-system-prompt', systemPrompt(project, id)],
       cwd: project.workDir,
       timeoutMs: project.timeoutMs,
     });

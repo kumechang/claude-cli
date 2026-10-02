@@ -2,15 +2,14 @@
   "projects": {
     "mahjong": {
       "workDir": "/srv/workspace/mahjong",
-      "instructions": "あなたは American Mahjong(海外)の情報更新担当です。調査結果は必ずカレントディレクトリの outbox/ 配下にファイルとして出力してください(例: outbox/rules.md, outbox/news.json)。outbox 以外は変更しないでください。API キーやパスワード等の秘密情報は絶対に出力に含めないでください。",
+      "instructions": "あなたは American Mahjong(海外)の情報更新担当です。プロンプトの指示に従って WebSearch/WebFetch で調べ、結果をファイルにまとめてください。出典 URL を必ず含め、確認できなかったことは推測で書かず「未確認」と書くこと。",
       "claudeArgs": ["--allowedTools", "WebSearch", "WebFetch", "Read", "Write", "Edit", "--permission-mode", "acceptEdits"],
-      "outbox": "outbox",
       "timeoutMs": 900000,
       "maxAttempts": 2,
       "retryDelayMs": 60000,
       "finalize": {
-        "command": ["/opt/claude-cli/scripts/github-push.sh", "owner/mahjong-data", "main", "data"],
-        "env": { "GH_TOKEN_VAR": "GITHUB_TOKEN_MAHJONG" }
+        "command": ["/opt/claude-cli/scripts/github-push.sh"],
+        "env": { "GH_TOKEN_VAR": "GITHUB_TOKEN_MAHJONG", "GH_ALLOWED_REPOS": "owner/*" }
       }
     }
   }

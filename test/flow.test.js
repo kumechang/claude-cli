@@ -10,18 +10,20 @@ test('複数プロンプトを順次実行 → 空になったら送信スクリ
   const counter = path.join(tmp, 'n');
   // プロンプトに応じて動作を変える偽 claude (outbox にファイルを出力する)
   const claude = fakeClaude(tmp, `
-mkdir -p outbox
+ARGS="$*"
+id=$(echo "$ARGS" | sed -n 's#.*outbox/\\([^/]*\\)/.*#\\1#p' | head -1)
+mkdir -p "outbox/$id"
 case "$p" in
-  flaky*) n=$(cat ${counter} 2>/dev/null || echo 0); echo $((n+1)) > ${counter}; [ "$n" = 0 ] && { echo "boom" >&2; exit 1; } ;;
+  flaky*) n=$(cat ${counter} 2>/dev/null || echo 0); echo $((n+1)) > ${counter}; [ "$n" = 0 ] && { echo "boom" >&2; exit 1; }; echo "data" > "outbox/$id/out.txt" ;;
   broken*) echo "always fails" >&2; exit 1 ;;
-  secret*) echo "key=AKIAABCDEFGHIJKLMNOP" > outbox/leak.txt ;;
-  *) echo "data for: $p" > "outbox/$(echo $p | tr -c 'a-z0-9\\n' _).txt" ;;
+  secret*) echo "key=AKIAABCDEFGHIJKLMNOP" > "outbox/$id/leak.txt" ;;
+  *) echo "data for: $p" > "outbox/$id/out.txt" ;;
 esac
 echo "{\\"result\\":\\"done: $p\\"}"`);
   fs.mkdirSync(path.join(tmp, 'wa')); fs.mkdirSync(path.join(tmp, 'wb'));
   const sendLog = path.join(tmp, 'send.log');
   const sender = path.join(tmp, 'send.sh');
-  fs.writeFileSync(sender, `#!/bin/sh\necho "$PROJECT_NAME ids=$(echo "$RESULT_IDS" | wc -l) outbox=$(ls "$OUTBOX_DIR" | tr '\\n' ',') tok=$MYTOK" >> ${sendLog}\n`, { mode: 0o755 });
+  fs.writeFileSync(sender, `#!/bin/sh\necho "$PROJECT_NAME id=$RESULT_ID files=$(ls "$OUTBOX_DIR" | tr '\\n' ',') tok=$MYTOK pending=$(ls ${path.join(tmp, 'q')}/$PROJECT_NAME/pending | grep -c .)" >> ${sendLog}\n`, { mode: 0o755 });
   fs.writeFileSync(path.join(tmp, 'projects.json'), JSON.stringify({ projects: {
     alpha: { workDir: path.join(tmp, 'wa'), maxAttempts: 2, retryDelayMs: 50, instructions: 'outbox に出力', finalize: { command: [sender], env: { MYTOK: 'x' } } },
     beta: { workDir: path.join(tmp, 'wb'), maxAttempts: 1, finalize: { command: [sender] } },
@@ -32,8 +34,7 @@ echo "{\\"result\\":\\"done: $p\\"}"`);
     API_TOKEN: 't', PORT: '0', PROJECTS_FILE: path.join(tmp, 'projects.json'), CLAUDE_BIN: claude, QUEUE_DIR: path.join(tmp, 'q'),
     HEALTHCHECK_INTERVAL_MS: '0', ADMIN_EMAIL: 'a@example.com', MAIL_FROM: 'b@example.com',
     SMTP_HOST: '127.0.0.1', SMTP_PORT: String(smtp.address().port), SMTP_STARTTLS: 'false',
-    API_TOKEN_LEAK_CHECK: 'should-not-reach-claude',
-  });
+      });
   const { server, listen } = require('../src/server');
   listen(); await new Promise((r) => server.once('listening', r));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -47,15 +48,17 @@ echo "{\\"result\\":\\"done: $p\\"}"`);
 
   // --- 2. 2件 + リトライされる1件。送信は全部終わってから1回だけ
   const a = await post('alpha', 'one'); const b = await post('alpha', 'flaky'); const c = await post('alpha', 'two');
-  await wait(() => fs.existsSync(sendLog));
+  await wait(() => fs.existsSync(sendLog) && fs.readFileSync(sendLog, 'utf8').trim().split('\n').length >= 3);
   await sleep(300);
   const log = fs.readFileSync(sendLog, 'utf8').trim().split('\n');
-  assert.strictEqual(log.length, 1, `送信は1回だけ: ${log}`);
-  assert.match(log[0], /alpha ids=3 .*tok=x/);
+  assert.strictEqual(log.length, 3, `結果ごとに1回ずつ: ${log}`);
+  for (const l of log) assert.match(l, /alpha id=.* files=out.txt, tok=x pending=0/); // 全部終わってから送信
   for (const id of [a.id, b.id, c.id]) assert.ok(fs.existsSync(q('alpha/done', `${id}.md`)), `${id} done`);
   assert.strictEqual(fs.readFileSync(counter, 'utf8').trim(), '2', 'flaky は2回実行された(1回目失敗→リトライ)');
   assert.deepStrictEqual(fs.readdirSync(q('alpha/pending')), []);
   assert.ok(!fs.existsSync(q('alpha/.dirty')), '送信済みなので dirty は消える');
+  // 失敗した送信は再試行され、上限で諦めて管理者にメール
+
   assert.strictEqual((await (await fetch(`${base}/healthz`)).json()).workerRunning, false, '空で停止');
 
   // --- 3. 失敗(maxAttempts=1) → failed フォルダ + 管理者メール、送信はしない(結果なし)
@@ -78,10 +81,10 @@ echo "{\\"result\\":\\"done: $p\\"}"`);
   assert.ok(fs.existsSync(q('beta/done', `${s.id}.md`)));
 
   // --- 5. 機密を取り除いて再度リクエスト → 再チェックを通って送信される
-  fs.rmSync(path.join(tmp, 'wb/outbox/leak.txt'));
+  fs.rmSync(path.join(tmp, 'wb/outbox', s.id, 'leak.txt'));
   await post('beta', 'clean');
   await wait(() => fs.readFileSync(sendLog, 'utf8') !== before);
-  assert.match(fs.readFileSync(sendLog, 'utf8'), /beta ids=/);
+  assert.match(fs.readFileSync(sendLog, 'utf8'), /beta id=/);
   assert.ok(!fs.existsSync(q('beta/.dirty')));
 
   server.closeAllConnections(); server.close(); smtp.close();

@@ -13,7 +13,7 @@ GitHub main に push ─▶ Actions(テスト) ─▶ SSH で deploy.sh ─▶ �
 | `/etc/claude-cli-server/env` | 環境変数・秘密情報(デプロイで消えない) |
 | `/etc/claude-cli-server/projects.json` | 案件定義(デプロイで消えない) |
 | `/var/lib/claude-cli/queue/<案件>/` | `pending/ done/ failed/`、`finalize.log` |
-| `/srv/workspace/<案件>/` | claude の作業ディレクトリ(`outbox/` に送信データが出力される) |
+| `/srv/workspace/<案件>/` | claude の作業ディレクトリ(`outbox/<id>/` に送信データが出力される) |
 
 ## 0. 1コア・1GB で claude CLI は動くか
 **動く見込みだが余裕はない**、というのが正直な評価です(私の環境では実機検証できていません)。
@@ -46,7 +46,7 @@ sudo REPO=kumechang/claude-cli DEPLOY_PUBKEY="$(cat gha_deploy.pub の中身)" b
 ```
 API_TOKEN=<長いランダム文字列>        # openssl rand -hex 32
 CLAUDE_CODE_OAUTH_TOKEN=<手順5>
-GITHUB_TOKEN_MAHJONG=<fine-grained PAT: 保存先リポジトリのみ / Contents: Read and write>
+GITHUB_TOKEN_MAHJONG=<fine-grained PAT: 送信先リポジトリのみ / Contents: Read and write>
 ADMIN_EMAIL=hkumekawa@gmail.com
 MAIL_FROM=hkumekawa@gmail.com
 SMTP_HOST=smtp.gmail.com
@@ -96,7 +96,7 @@ curl https://203-0-113-5.sslip.io/healthz
 sudo systemctl start claude-cli-server
 sudo systemctl status claude-cli-server
 journalctl -u claude-cli-server -f
-curl -XPOST https://203-0-113-5.sslip.io/projects/mahjong/run -H "Authorization: Bearer $API_TOKEN" -H 'Content-Type: application/json' -d '{"prompt":"American Mahjong の最新ルール変更を調べて outbox/rules.md にまとめて"}'
+curl -XPOST https://203-0-113-5.sslip.io/projects/mahjong/run -H "Authorization: Bearer $API_TOKEN" -H 'Content-Type: application/json' -d '{"prompt":"American Mahjong の最新のルール変更を調べて Markdown にまとめて。保存先: リポジトリ owner/mahjong-data、ブランチ main、フォルダ docs/rules"}'
 ls /var/lib/claude-cli/queue/mahjong/done; cat /var/lib/claude-cli/queue/mahjong/finalize.log
 ```
 
@@ -122,7 +122,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: |
-          jq -n --arg p "American Mahjong の最新情報を調べて outbox/ に出力して" '{prompt:$p}' |
+          jq -n --arg p "American Mahjong の最新情報を調べて Markdown にまとめて。保存先: リポジトリ owner/mahjong-data、ブランチ main、フォルダ docs/news" '{prompt:$p}' |
           curl -fsS -X POST "$URL/projects/mahjong/run" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data-binary @-
         env:
           URL: ${{ secrets.CLAUDE_SERVER_URL }}
@@ -137,7 +137,7 @@ jobs:
 ## 運用メモ
 - 設定変更(env / projects.json)は `sudo systemctl restart claude-cli-server` で反映。
 - ログ: `journalctl -u claude-cli-server`、送信処理のログ: `queue/<案件>/finalize.log`。
-- 機密情報の疑いで送信が止まった場合はメールが届きます。outbox の該当ファイルを確認・修正後、次のリクエスト(またはサービス再起動)で再チェックして送信します。
+- 機密情報の疑いで送信が止まった場合はメールが届きます。`outbox/<id>/` の該当ファイルを確認・修正後、次のリクエスト(またはサービス再起動)で再チェックして送信します。
 - 失敗したプロンプトの再実行: `queue/<案件>/failed/<id>.md` を `pending/` に移して、何かリクエストを送る。
 - claude CLI の更新: `sudo npm update -g @anthropic-ai/claude-code`
 - SSH のパスワード認証は無効化を推奨(`PasswordAuthentication no`)。
