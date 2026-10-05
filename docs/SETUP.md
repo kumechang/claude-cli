@@ -132,22 +132,25 @@ ls /var/lib/claude-cli/queue/mahjong/done; cat /var/lib/claude-cli/queue/mahjong
 以降、`main` への push で自動デプロイされます。手動実行は *Actions → deploy → Run workflow*。
 デプロイ(再起動)時は実行中の1件の完了を待ってから停止し(最大15分)、未実施のプロンプトは pending に残って再開されます。新バージョンが起動しなければ自動でロールバックします。
 
-## 9. 呼び出し元(GitHub Actions)の例
-cron-job.org から GitHub API(`workflow_dispatch`)を叩き、Actions 内でこのサーバーへ投げる想定。*Secrets* に `CLAUDE_SERVER_URL`(`https://133-18-253-149.sslip.io`)と `CLAUDE_SERVER_TOKEN`(= `API_TOKEN`)を登録:
-```yaml
-on: workflow_dispatch
-jobs:
-  kick:
-    runs-on: ubuntu-latest
-    steps:
-      - run: |
-          jq -n --arg p "American Mahjong の最新情報を調べて Markdown にまとめて。保存先: リポジトリ kumechang/mahjong-data、ブランチ main、フォルダ docs/news" '{prompt:$p}' |
-          curl -fsS -X POST "$URL/projects/mahjong/run" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data-binary @-
-        env:
-          URL: ${{ secrets.CLAUDE_SERVER_URL }}
-          TOKEN: ${{ secrets.CLAUDE_SERVER_TOKEN }}
+## 9. 呼び出し元(GitHub Actions + cron-job.org)
 ```
+cron-job.org ─(GitHub API: workflow_dispatch)─▶ kumechang/American-Mahjong の Actions ─▶ POST /projects/mahjong/run
+```
+プロンプトは呼び出し元リポジトリの `prompts/*.md` として Git で管理し、cron-job.org は「どのファイルを送るか」だけを指定します。雛形は `docs/caller/`。
+
+1. **呼び出し元リポジトリに配置**: `docs/caller/kick-claude.yml` → `.github/workflows/kick-claude.yml`、`docs/caller/prompts/daily.md` → `prompts/daily.md`
+2. **Secrets を登録**(呼び出し元リポジトリの Settings → Secrets and variables → Actions): `CLAUDE_SERVER_URL` = `https://133-18-253-149.sslip.io`、`CLAUDE_SERVER_TOKEN` = サーバーの `API_TOKEN`
+3. **手動で動作確認**: Actions → kick-claude → Run workflow。`{"project":"mahjong","id":"…","status":"queued",…}` が出れば受付成功。数分後に `mahjong-data` へ push される
+4. **cron-job.org に登録**:
+   - URL: `https://api.github.com/repos/kumechang/American-Mahjong/actions/workflows/kick-claude.yml/dispatches`
+   - Method: `POST`、成功は HTTP **204**
+   - Headers: `Authorization: Bearer <PAT>` / `Accept: application/vnd.github+json` / `X-GitHub-Api-Version: 2022-11-28` / `Content-Type: application/json`
+   - Body: `{"ref":"main","inputs":{"prompt_file":"prompts/daily.md"}}`
+   - PAT は **American-Mahjong だけ**に限定した fine-grained PAT、権限は **Actions: Read and write** のみ。期限を設定する
+   - スケジュールは好きな頻度(例: 毎日 朝6時)
+
 投げっぱなしで構いません(202 が返れば受付完了。結果は VPS 側で処理され、失敗時はメールが届きます)。
+注意: 呼び出し元が public リポジトリの場合、`prompts/*.md` と workflow は公開されます(Secrets は公開されません)。
 
 ## 10. 死活監視(UptimeRobot)
 - 監視タイプ: HTTP(s)、URL: `https://133-18-253-149.sslip.io/healthz`(認証不要)。サーバーが落ちていれば通知されます。
