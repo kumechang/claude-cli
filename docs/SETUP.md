@@ -49,7 +49,7 @@ sudo REPO=kumechang/claude-cli DEPLOY_PUBKEY="ssh-ed25519 AAAA...(gha_deploy.pub
 ```
 API_TOKEN=<長いランダム文字列>        # openssl rand -hex 32
 CLAUDE_CODE_OAUTH_TOKEN=<手順5>
-GITHUB_TOKEN_MAHJONG=<fine-grained PAT: 送信先リポジトリのみ / Contents: Read and write>
+GITHUB_TOKEN_MAHJONG=<fine-grained PAT: 送信先リポジトリのみ / Contents: Read and write + Pull requests: Read and write>
 ADMIN_EMAIL=hkumekawa@gmail.com
 MAIL_FROM=hkumekawa@gmail.com
 SMTP_HOST=smtp.gmail.com

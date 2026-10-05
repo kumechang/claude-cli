@@ -20,6 +20,7 @@ HTTP で受けたプロンプトをサーバーの `claude` CLI(`claude -p`、�
 American Mahjong の 2026 年のカード(NMJL)の変更点を調べて、日本語の Markdown にまとめて。
 保存先: リポジトリ owner/mahjong-data、ブランチ main、フォルダ docs/2026
 ```
+別ブランチに送ってプルリクエストにしたい場合は、「ブランチ inbox/2026-10-05 を作って保存し、プルリクエストにして」のように書く。
 
 ## 失敗時の扱い
 - claude の実行失敗は、間を置いて**1回だけ自動リトライ**(`maxAttempts` 既定2、`retryDelayMs` 既定60秒)。それでも失敗なら `queue/<案件>/failed/` に置き、管理者にメール。
@@ -33,7 +34,7 @@ American Mahjong の 2026 年のカード(NMJL)の変更点を調べて、日本
 - `outbox`: 出力先の親フォルダ(`workDir` 相対、既定 `outbox`。実際の出力先は `outbox/<id>/`)
 - `finalize.command`: 送信スクリプト(配列。シェルは介さない)。`finalize.env` で追加の環境変数。省略すると送信なし。`finalize.maxAttempts`(既定3)
   - スクリプトには `PROJECT_NAME` `PROJECT_DIR` `RESULT_ID` `OUTBOX_DIR`(=`outbox/<id>`) `DONE_DIR` が渡される。終了コード 0 で成功
-  - 標準の `scripts/github-push.sh`: `_target.json` の送信先に、GitHub API でファイルをコミットする。ブランチが存在しなければ、`base`(省略時は既定ブランチ)から自動で作る。
+  - 標準の `scripts/github-push.sh`: `_target.json` の送信先に、GitHub API でファイルをコミットする。ブランチが存在しなければ、`base`(省略時は既定ブランチ)から自動で作る。ブランチが base と異なり実際にファイルを push したときは、**プルリクエストも自動で作る**(同じブランチの open な PR があれば作らない)。`_target.json` の `pr: false` / `pr_title` / `pr_body` で調整できる。トークンには **Pull requests: Read and write** 権限が必要
     **`GH_ALLOWED_REPOS`(例 `owner/*`)が必須**。プロンプトや claude が読んだ Web ページの内容で、意図しないリポジトリに送られないようにするため。トークンは `GH_TOKEN_VAR` で指定した環境変数
   - メール送信など別の処理にしたい案件は、自作スクリプトを指定する
 - `timeoutMs` `maxAttempts` `retryDelayMs` `secretPatterns`(機密チェックの追加正規表現)

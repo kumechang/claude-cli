@@ -17,7 +17,7 @@ test('scripts/github-push.sh: _target.json の送信先検証、新規は PUT、
   fs.writeFileSync(path.join(outbox, 'changed.txt'), 'new body\n');
   const blob = (s) => spawnSync('git', ['hash-object', '--stdin'], { input: s }).stdout.toString().trim();
 
-  const puts = []; const refs = []; let created = false;
+  const puts = []; const refs = []; const prs = []; let created = false;
   const gh = http.createServer((req, res) => {
     let b = ''; req.on('data', (c) => (b += c));
     req.on('end', () => {
@@ -30,6 +30,8 @@ test('scripts/github-push.sh: _target.json の送信先検証、新規は PUT、
         if (br === 'main' || (br === 'inbox/2026-10-05' && created)) return res.end(JSON.stringify({ object: { sha: 'BASESHA' } }));
         res.statusCode = 404; return res.end('{}');
       }
+      if (req.method === 'GET' && p === '/repos/o/r/pulls') return res.end(JSON.stringify([]));
+      if (req.method === 'POST' && p === '/repos/o/r/pulls') { prs.push(JSON.parse(b)); res.statusCode = 201; return res.end(JSON.stringify({ html_url: 'https://github.com/o/r/pull/1' })); }
       if (req.method === 'POST' && p === '/repos/o/r/git/refs') { refs.push(JSON.parse(b)); created = true; res.statusCode = 201; return res.end('{}'); }
       if (req.method === 'GET') {
         if (p.endsWith('/data/same.txt')) return res.end(JSON.stringify({ sha: blob('same\n') }));
@@ -59,11 +61,25 @@ test('scripts/github-push.sh: _target.json の送信先検証、新規は PUT、
   fs.writeFileSync(path.join(outbox, '_target.json'), JSON.stringify({ repo: 'o/r', branch: 'main', dir: 'data' }));
 
   const r = await run();
+  assert.strictEqual(prs.length, 0, 'main(=base)への直接 push では PR を作らない');
 
   // 存在しないブランチは、既定ブランチ(base)から自動で作ってから書き込む
   fs.writeFileSync(path.join(outbox, '_target.json'), JSON.stringify({ repo: 'o/r', branch: 'inbox/2026-10-05', dir: 'data' }));
   const nPuts = puts.length;
   const r2 = await run();
+  assert.strictEqual(prs.length, 1);
+  assert.strictEqual(prs[0].head, 'inbox/2026-10-05'); assert.strictEqual(prs[0].base, 'main');
+  assert.match(prs[0].title, /^claude: mj inbox\/2026-10-05$/); assert.match(prs[0].body, /claude-cli-server が作成/);
+  assert.match(r2.stdout, /PR created: https:\/\/github.com\/o\/r\/pull\/1/);
+
+  // pr:false なら PR を作らない
+  fs.writeFileSync(path.join(outbox, '_target.json'), JSON.stringify({ repo: 'o/r', branch: 'inbox/2026-10-05', dir: 'data2', pr: false }));
+  await run();
+  assert.strictEqual(prs.length, 1, 'pr:false では作らない');
+  // タイトル/本文の指定
+  fs.writeFileSync(path.join(outbox, '_target.json'), JSON.stringify({ repo: 'o/r', branch: 'inbox/2026-10-05', dir: 'data3', pr_title: '日次ニュース', pr_body: '本文' }));
+  await run();
+  assert.strictEqual(prs.length, 2); assert.strictEqual(prs[1].title, '日次ニュース'); assert.match(prs[1].body, /^本文/);
   gh.close();
   assert.ifError(r2.err && Object.assign(r2.err, { message: r2.stderr }));
   assert.deepStrictEqual(refs, [{ ref: 'refs/heads/inbox/2026-10-05', sha: 'BASESHA' }]);

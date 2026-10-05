@@ -3,6 +3,9 @@
 # 送信先はプロンプトに書かれ、claude が OUTBOX_DIR/_target.json に書き出す:
 #     {"repo":"owner/name", "branch":"main", "dir":"格納フォルダ", "base":"main"}
 #     (branch 省略時 main、dir は空でも可。branch が存在しなければ base(省略時はリポジトリの既定ブランチ)から自動で作る)
+#   branch が base と異なり、実際にファイルを push したときは、プルリクエストも自動で作る(同じブランチの open な PR があれば作らない)。
+#     任意キー: "pr": false (PR を作らない) / "pr_title" / "pr_body"
+#     ※ PR の作成には、トークンに Pull requests: Read and write 権限が必要
 #
 #   projects.json の finalize に指定:
 #     "finalize": { "command": ["/opt/claude-cli/scripts/github-push.sh"],
@@ -27,6 +30,7 @@ REPO=$(jq -er '.repo' "$SRC/_target.json") || die "_target.json に repo があ�
 BRANCH=$(jq -r '.branch // "main"' "$SRC/_target.json")
 DEST=$(jq -r '.dir // ""' "$SRC/_target.json")
 BASE=$(jq -r '.base // ""' "$SRC/_target.json")
+PR=$(jq -r 'if .pr == false then "false" else "true" end' "$SRC/_target.json")
 DEST=${DEST#./}; DEST=${DEST%/}
 
 # 送信先の検証(プロンプト由来の値なので厳しく見る)
@@ -47,14 +51,17 @@ api() { # api METHOD PATH [json-file]
     ${body:+-H "Content-Type: application/json" --data-binary @"$body"}
 }
 
+default_base() { # BASE が未指定ならリポジトリの既定ブランチを使う
+  [ -n "$BASE" ] && return 0
+  local r c; r=$(api GET ""); c=${r##*$'\n'}
+  [ "$c" = 200 ] || die "リポジトリ情報の取得に失敗 (HTTP $c)"
+  BASE=$(jq -r .default_branch <<<"${r%$'\n'*}")
+}
+
 # ブランチが無ければ base から作る(Contents API は存在しないブランチに書けないため)
 resp=$(api GET "/git/ref/heads/$BRANCH"); code=${resp##*$'\n'}
 if [ "$code" = 404 ]; then
-  if [ -z "$BASE" ]; then
-    resp=$(api GET ""); code=${resp##*$'\n'}
-    [ "$code" = 200 ] || die "リポジトリ情報の取得に失敗 (HTTP $code)"
-    BASE=$(jq -r .default_branch <<<"${resp%$'\n'*}")
-  fi
+  default_base
   resp=$(api GET "/git/ref/heads/$BASE"); code=${resp##*$'\n'}
   [ "$code" = 200 ] || die "base ブランチ $BASE が見つかりません (HTTP $code)"
   base_sha=$(jq -r .object.sha <<<"${resp%$'\n'*}")
@@ -89,3 +96,31 @@ while IFS= read -r -d '' file; do
   case $code in 200|201) echo "pushed: $REPO/$target"; count=$((count+1));; *) die "PUT $target -> HTTP $code: ${resp%$'\n'*}";; esac
 done < <(find "$SRC" -type f ! -name _target.json -print0 | sort -z)
 echo "done: $count file(s) pushed to $REPO@$BRANCH"
+
+# プルリクエスト(branch が base と異なり、実際に push したときだけ)
+if [ "$PR" = true ] && [ "$count" -gt 0 ]; then
+  default_base
+  if [ "$BRANCH" != "$BASE" ]; then
+    OWNER=${REPO%%/*}
+    head_enc=$(jq -rn --arg h "$OWNER:$BRANCH" '$h|@uri'); base_enc=$(jq -rn --arg b "$BASE" '$b|@uri')
+    resp=$(api GET "/pulls?state=open&head=$head_enc&base=$base_enc"); code=${resp##*$'\n'}
+    [ "$code" = 200 ] || die "PR の確認に失敗 (HTTP $code): ${resp%$'\n'*}"
+    existing=$(jq -r '.[0].html_url // empty' <<<"${resp%$'\n'*}")
+    if [ -n "$existing" ]; then
+      echo "PR exists: $existing"
+    else
+      prbody=$(mktemp)
+      jq --arg head "$BRANCH" --arg base "$BASE" --arg proj "${PROJECT_NAME:-project}" --arg id "${RESULT_ID:-}" --argjson n "$count" '
+        {title: ((.pr_title // ("claude: " + $proj + " " + $head)) | tostring | .[0:200]),
+         head: $head, base: $base,
+         body: (((.pr_body // "") | tostring | .[0:5000]) + "\n\n---\nclaude-cli-server が作成(案件: " + $proj + ", id: " + $id + ", " + ($n|tostring) + " ファイル)")}
+      ' "$SRC/_target.json" > "$prbody"
+      resp=$(api POST "/pulls" "$prbody"); code=${resp##*$'\n'}; rm -f "$prbody"
+      case $code in
+        201) echo "PR created: $(jq -r .html_url <<<"${resp%$'\n'*}")";;
+        422) grep -qi "already exists" <<<"${resp%$'\n'*}" && echo "PR exists (422)" || die "PR 作成に失敗 (HTTP 422): ${resp%$'\n'*}";;
+        *) die "PR 作成に失敗 (HTTP $code): ${resp%$'\n'*}";;
+      esac
+    fi
+  fi
+fi
