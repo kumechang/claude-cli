@@ -51,6 +51,7 @@ function loadProjects(file) {
 
 module.exports = {
   port: Number(process.env.PORT || 3000),
+  host: process.env.HOST || '127.0.0.1', // 外部公開は Caddy(HTTPS)経由のみ。直接公開するなら HOST=0.0.0.0
   authToken: required('API_TOKEN'),
   claudeBin: process.env.CLAUDE_BIN || 'claude',
   queueDir: path.resolve(process.env.QUEUE_DIR || './queue'), // <queueDir>/<project>/{pending,done,failed}

@@ -84,14 +84,30 @@ sudo -u claude -H claude setup-token     # 表示された URL を手元のブ�
 
 ## 6. HTTPS で公開する(IP 直接 + ドメインなし)
 **HTTP のままだと Bearer トークンが平文で流れ、盗まれると誰でもサーバー上で claude を動かせます。** ドメインを契約しなくても、
-IP をホスト名にしてくれる無料サービス **sslip.io**(例: IP `203.0.113.5` → `203-0-113-5.sslip.io`)と Caddy で、正規の証明書(Let's Encrypt)を自動取得できます。
+IP をホスト名にしてくれる無料サービス **sslip.io / nip.io**(設定・登録は不要。名前に IP を入れるだけ)と Caddy で、正規の証明書(Let's Encrypt)を自動取得できます。
+例: IP `133.18.253.149` → `133-18-253-149.sslip.io`(または `133-18-253-149.nip.io`)
+
+アプリは `127.0.0.1:3000` でしか待ち受けません(外部には出ない)。外部からは Caddy(443番)経由でのみ届きます。
 ```bash
+# 1. ホスト名が IP に解決されるか確認
+dig +short 133-18-253-149.sslip.io       # 133.18.253.149 と出ればOK(dig が無ければ: getent hosts 133-18-253-149.sslip.io)
+
+# 2. Caddy をインストール
 sudo apt install -y caddy
-echo '203-0-113-5.sslip.io { reverse_proxy 127.0.0.1:3000 }' | sudo tee /etc/caddy/Caddyfile   # 自分の IP に置き換える
+
+# 3. 設定(ホスト名は自分の IP に置き換える)
+echo '133-18-253-149.sslip.io {
+    reverse_proxy 127.0.0.1:3000
+}' | sudo tee /etc/caddy/Caddyfile
 sudo systemctl reload caddy
-curl https://203-0-113-5.sslip.io/healthz
+
+# 4. 証明書の取得状況とログ
+sudo journalctl -u caddy -n 30 --no-pager      # "certificate obtained successfully" が出ればOK
 ```
-- sslip.io 側の都合で証明書が発行できない場合は、無料の DDNS(DuckDNS など)のホスト名で同じことができます。
+確認は**手元の PC**から: `curl https://133-18-253-149.sslip.io/healthz`
+
+- 事前に、Kagoya のパケットフィルタと ufw で **80 / 443** が開いていること(証明書の取得に 80 番も使う)。
+- 証明書が取れない場合: sslip.io は共有ドメインのため、発行回数の制限に当たることがある。`nip.io` に替える、または無料の DDNS(DuckDNS など)のホスト名で同じ設定をする。
 - どうしても HTTP のままにする場合は、`API_TOKEN` を使い捨て前提にして、claude の権限(`--allowedTools`)を最小にしてください(推奨しません)。
 
 ## 7. 起動と確認
@@ -99,7 +115,7 @@ curl https://203-0-113-5.sslip.io/healthz
 sudo systemctl start claude-cli-server
 sudo systemctl status claude-cli-server
 journalctl -u claude-cli-server -f
-curl -XPOST https://203-0-113-5.sslip.io/projects/mahjong/run -H "Authorization: Bearer $API_TOKEN" -H 'Content-Type: application/json' -d '{"prompt":"American Mahjong の最新のルール変更を調べて Markdown にまとめて。保存先: リポジトリ kumechang/mahjong-data、ブランチ main、フォルダ docs/rules"}'
+curl -XPOST https://133-18-253-149.sslip.io/projects/mahjong/run -H "Authorization: Bearer $API_TOKEN" -H 'Content-Type: application/json' -d '{"prompt":"American Mahjong の最新のルール変更を調べて Markdown にまとめて。保存先: リポジトリ kumechang/mahjong-data、ブランチ main、フォルダ docs/rules"}'
 ls /var/lib/claude-cli/queue/mahjong/done; cat /var/lib/claude-cli/queue/mahjong/finalize.log
 ```
 
@@ -117,7 +133,7 @@ ls /var/lib/claude-cli/queue/mahjong/done; cat /var/lib/claude-cli/queue/mahjong
 デプロイ(再起動)時は実行中の1件の完了を待ってから停止し(最大15分)、未実施のプロンプトは pending に残って再開されます。新バージョンが起動しなければ自動でロールバックします。
 
 ## 9. 呼び出し元(GitHub Actions)の例
-cron-job.org から GitHub API(`workflow_dispatch`)を叩き、Actions 内でこのサーバーへ投げる想定。*Secrets* に `CLAUDE_SERVER_URL`(`https://203-0-113-5.sslip.io`)と `CLAUDE_SERVER_TOKEN`(= `API_TOKEN`)を登録:
+cron-job.org から GitHub API(`workflow_dispatch`)を叩き、Actions 内でこのサーバーへ投げる想定。*Secrets* に `CLAUDE_SERVER_URL`(`https://133-18-253-149.sslip.io`)と `CLAUDE_SERVER_TOKEN`(= `API_TOKEN`)を登録:
 ```yaml
 on: workflow_dispatch
 jobs:
@@ -134,7 +150,7 @@ jobs:
 投げっぱなしで構いません(202 が返れば受付完了。結果は VPS 側で処理され、失敗時はメールが届きます)。
 
 ## 10. 死活監視(UptimeRobot)
-- 監視タイプ: HTTP(s)、URL: `https://203-0-113-5.sslip.io/healthz`(認証不要)。サーバーが落ちていれば通知されます。
+- 監視タイプ: HTTP(s)、URL: `https://133-18-253-149.sslip.io/healthz`(認証不要)。サーバーが落ちていれば通知されます。
 - claude の認証切れまで UptimeRobot で検知したい場合は `https://…/healthz?strict=1`(異常時 503)を登録。(認証切れは本サーバーからもメールが届きます)
 
 ## 運用メモ

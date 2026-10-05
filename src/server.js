@@ -75,8 +75,8 @@ const server = http.createServer(async (req, res) => {
 });
 
 function listen() {
-  return server.listen(config.port, () => {
-    console.log(`listening on :${config.port}`);
+  return server.listen(config.port, config.host, () => {
+    console.log(`listening on ${config.host}:${config.port}`);
     health.start({ recover: jobs.start });
     jobs.start(); // 前回の未実施/未送信が残っていれば再開(なければ即停止)
   });
