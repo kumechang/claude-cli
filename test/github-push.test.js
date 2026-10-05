@@ -97,6 +97,22 @@ test('scripts/github-push.sh: _target.json の送信先検証、新規は PUT、
   assert.ifError(r4.err && Object.assign(r4.err, { message: r4.stderr }));
   assert.match(r4.stdout, /PR skipped/);
   prs.length = nPrs;
+
+  // PR だけ作るモード: ファイルなし + _target.json のみ。既存ブランチなら PR を作る / 存在しなければエラー(ブランチは作らない)
+  const outbox3 = path.join(tmp, 'outbox3'); fs.mkdirSync(outbox3);
+  fs.writeFileSync(path.join(outbox3, '_target.json'), JSON.stringify({ repo: 'o/r', branch: 'inbox/2026-10-05', pr_title: 'PRだけ' }));
+  const nPuts3 = puts.length;
+  const r5 = await run({ OUTBOX_DIR: outbox3 });
+  assert.ifError(r5.err && Object.assign(r5.err, { message: r5.stderr }));
+  assert.strictEqual(prs.length, nPrs + 1); assert.strictEqual(prs.at(-1).title, 'PRだけ');
+  assert.strictEqual(puts.length, nPuts3, 'ファイルは push しない');
+  const nRefs = refs.length;
+  fs.writeFileSync(path.join(outbox3, '_target.json'), JSON.stringify({ repo: 'o/r', branch: 'missing-branch' }));
+  const r6 = await run({ OUTBOX_DIR: outbox3 });
+  assert.ok(r6.err, '存在しないブランチは PR のみモードでエラー');
+  assert.match(r6.stderr, /存在しません/);
+  assert.strictEqual(refs.length, nRefs, 'PR のみモードではブランチを作らない');
+  prs.length = nPrs;
   gh.close();
   assert.ifError(r2.err && Object.assign(r2.err, { message: r2.stderr }));
   assert.deepStrictEqual(refs, [{ ref: 'refs/heads/inbox/2026-10-05', sha: 'BASESHA' }]);

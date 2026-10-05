@@ -6,6 +6,7 @@
 #   branch が base と異なるときは、プルリクエストも自動で作る(同じブランチの open な PR があれば作らない。base との差分がなければ作らない)。
 #     任意キー: "pr": false (PR を作らない) / "pr_title" / "pr_body"
 #     ※ PR の作成には、トークンに Pull requests: Read and write 権限が必要
+#   送るファイルが無く _target.json だけの場合は「PR だけ作る」モード(既存のブランチに対して、open な PR が無ければ作る。ブランチは作らない)
 #
 #   projects.json の finalize に指定:
 #     "finalize": { "command": ["/opt/claude-cli/scripts/github-push.sh"],
@@ -23,7 +24,11 @@ API=${GITHUB_API_URL:-https://api.github.com}
 SRC=${OUTBOX_DIR:?OUTBOX_DIR が未設定です}
 die() { echo "ERROR: $*" >&2; exit 1; }
 
-[ -d "$SRC" ] && [ -n "$(find "$SRC" -type f ! -name _target.json -print -quit)" ] || { echo "送信するファイルなし: $SRC"; exit 0; }
+[ -d "$SRC" ] || { echo "送信するものなし: $SRC"; exit 0; }
+HAS_FILES=false
+[ -n "$(find "$SRC" -type f ! -name _target.json -print -quit)" ] && HAS_FILES=true
+# ファイルが無く _target.json も無ければ何もしない。_target.json だけなら「PR だけ作る」モード
+[ "$HAS_FILES" = true ] || [ -f "$SRC/_target.json" ] || { echo "送信するものなし: $SRC"; exit 0; }
 [ -f "$SRC/_target.json" ] || die "$SRC/_target.json がありません(プロンプトに送信先の記載がなかった可能性)。データは $SRC に残っています"
 
 REPO=$(jq -er '.repo' "$SRC/_target.json") || die "_target.json に repo がありません"
@@ -60,7 +65,9 @@ default_base() { # BASE が未指定ならリポジトリの既定ブランチ�
 
 # ブランチが無ければ base から作る(Contents API は存在しないブランチに書けないため)
 resp=$(api GET "/git/ref/heads/$BRANCH"); code=${resp##*$'\n'}
-if [ "$code" = 404 ]; then
+if [ "$code" = 404 ] && [ "$HAS_FILES" = false ]; then
+  die "PR のみのモード: ブランチ $BRANCH が $REPO に存在しません(ファイルが無いのでブランチは作りません)"
+elif [ "$code" = 404 ]; then
   default_base
   resp=$(api GET "/git/ref/heads/$BASE"); code=${resp##*$'\n'}
   [ "$code" = 200 ] || die "base ブランチ $BASE が見つかりません (HTTP $code)"
