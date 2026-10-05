@@ -3,7 +3,7 @@
 # 送信先はプロンプトに書かれ、claude が OUTBOX_DIR/_target.json に書き出す:
 #     {"repo":"owner/name", "branch":"main", "dir":"格納フォルダ", "base":"main"}
 #     (branch 省略時 main、dir は空でも可。branch が存在しなければ base(省略時はリポジトリの既定ブランチ)から自動で作る)
-#   branch が base と異なり、実際にファイルを push したときは、プルリクエストも自動で作る(同じブランチの open な PR があれば作らない)。
+#   branch が base と異なるときは、プルリクエストも自動で作る(同じブランチの open な PR があれば作らない。base との差分がなければ作らない)。
 #     任意キー: "pr": false (PR を作らない) / "pr_title" / "pr_body"
 #     ※ PR の作成には、トークンに Pull requests: Read and write 権限が必要
 #
@@ -98,7 +98,8 @@ done < <(find "$SRC" -type f ! -name _target.json -print0 | sort -z)
 echo "done: $count file(s) pushed to $REPO@$BRANCH"
 
 # プルリクエスト(branch が base と異なり、実際に push したときだけ)
-if [ "$PR" = true ] && [ "$count" -gt 0 ]; then
+# push 済み(変更なし)でも、PR が無ければ作る。PR の作成だけ失敗した後の再試行でも作られるようにするため
+if [ "$PR" = true ]; then
   default_base
   if [ "$BRANCH" != "$BASE" ]; then
     OWNER=${REPO%%/*}
@@ -118,7 +119,9 @@ if [ "$PR" = true ] && [ "$count" -gt 0 ]; then
       resp=$(api POST "/pulls" "$prbody"); code=${resp##*$'\n'}; rm -f "$prbody"
       case $code in
         201) echo "PR created: $(jq -r .html_url <<<"${resp%$'\n'*}")";;
-        422) grep -qi "already exists" <<<"${resp%$'\n'*}" && echo "PR exists (422)" || die "PR 作成に失敗 (HTTP 422): ${resp%$'\n'*}";;
+        422) if grep -qi "already exists" <<<"${resp%$'\n'*}"; then echo "PR exists (422)"
+             elif grep -qi "no commits between" <<<"${resp%$'\n'*}"; then echo "PR skipped: $BASE との差分がありません"
+             else die "PR 作成に失敗 (HTTP 422): ${resp%$'\n'*}"; fi;;
         *) die "PR 作成に失敗 (HTTP $code): ${resp%$'\n'*}";;
       esac
     fi

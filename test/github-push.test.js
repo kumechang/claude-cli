@@ -27,10 +27,11 @@ test('scripts/github-push.sh: _target.json の送信先検証、新規は PUT、
       if (req.method === 'GET' && p === '/repos/o/r') return res.end(JSON.stringify({ default_branch: 'main' }));
       if (req.method === 'GET' && p.startsWith('/repos/o/r/git/ref/heads/')) {
         const br = p.replace('/repos/o/r/git/ref/heads/', '');
-        if (br === 'main' || (br === 'inbox/2026-10-05' && created)) return res.end(JSON.stringify({ object: { sha: 'BASESHA' } }));
+        if (br === 'main' || br === 'nocommits' || (br === 'inbox/2026-10-05' && created)) return res.end(JSON.stringify({ object: { sha: 'BASESHA' } }));
         res.statusCode = 404; return res.end('{}');
       }
       if (req.method === 'GET' && p === '/repos/o/r/pulls') return res.end(JSON.stringify([]));
+      if (req.method === 'POST' && p === '/repos/o/r/pulls' && JSON.parse(b).head === 'nocommits') { res.statusCode = 422; return res.end(JSON.stringify({ message: 'Validation Failed', errors: [{ message: 'No commits between main and nocommits' }] })); }
       if (req.method === 'POST' && p === '/repos/o/r/pulls') { prs.push(JSON.parse(b)); res.statusCode = 201; return res.end(JSON.stringify({ html_url: 'https://github.com/o/r/pull/1' })); }
       if (req.method === 'POST' && p === '/repos/o/r/git/refs') { refs.push(JSON.parse(b)); created = true; res.statusCode = 201; return res.end('{}'); }
       if (req.method === 'GET') {
@@ -80,6 +81,22 @@ test('scripts/github-push.sh: _target.json の送信先検証、新規は PUT、
   fs.writeFileSync(path.join(outbox, '_target.json'), JSON.stringify({ repo: 'o/r', branch: 'inbox/2026-10-05', dir: 'data3', pr_title: '日次ニュース', pr_body: '本文' }));
   await run();
   assert.strictEqual(prs.length, 2); assert.strictEqual(prs[1].title, '日次ニュース'); assert.match(prs[1].body, /^本文/);
+  // 変更なし(push 0件)でも、PR が無ければ作る(PR 作成だけ失敗した後の再試行を救う)
+  const outbox2 = path.join(tmp, 'outbox2'); fs.mkdirSync(outbox2);
+  fs.writeFileSync(path.join(outbox2, 'same.txt'), 'same\n');
+  fs.writeFileSync(path.join(outbox2, '_target.json'), JSON.stringify({ repo: 'o/r', branch: 'inbox/2026-10-05', dir: 'data' }));
+  const nPrs = prs.length;
+  const r3 = await run({ OUTBOX_DIR: outbox2 });
+  assert.ifError(r3.err && Object.assign(r3.err, { message: r3.stderr }));
+  assert.match(r3.stdout, /unchanged: o\/r\/data\/same.txt/);
+  assert.strictEqual(prs.length, nPrs + 1, 'push 0件でも PR を作る');
+  // base との差分がない(422 No commits)場合はエラーにしない
+  fs.writeFileSync(path.join(outbox2, '_target.json'), JSON.stringify({ repo: 'o/r', branch: 'nocommits', dir: 'data' }));
+  created = true;
+  const r4 = await run({ OUTBOX_DIR: outbox2 });
+  assert.ifError(r4.err && Object.assign(r4.err, { message: r4.stderr }));
+  assert.match(r4.stdout, /PR skipped/);
+  prs.length = nPrs;
   gh.close();
   assert.ifError(r2.err && Object.assign(r2.err, { message: r2.stderr }));
   assert.deepStrictEqual(refs, [{ ref: 'refs/heads/inbox/2026-10-05', sha: 'BASESHA' }]);
