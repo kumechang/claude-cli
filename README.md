@@ -33,7 +33,7 @@ American Mahjong の 2026 年のカード(NMJL)の変更点を調べて、日本
 - `outbox`: 出力先の親フォルダ(`workDir` 相対、既定 `outbox`。実際の出力先は `outbox/<id>/`)
 - `finalize.command`: 送信スクリプト(配列。シェルは介さない)。`finalize.env` で追加の環境変数。省略すると送信なし。`finalize.maxAttempts`(既定3)
   - スクリプトには `PROJECT_NAME` `PROJECT_DIR` `RESULT_ID` `OUTBOX_DIR`(=`outbox/<id>`) `DONE_DIR` が渡される。終了コード 0 で成功
-  - 標準の `scripts/github-push.sh`: `_target.json` の送信先に、GitHub API でファイルをコミットする。
+  - 標準の `scripts/github-push.sh`: `_target.json` の送信先に、GitHub API でファイルをコミットする。ブランチが存在しなければ、`base`(省略時は既定ブランチ)から自動で作る。
     **`GH_ALLOWED_REPOS`(例 `owner/*`)が必須**。プロンプトや claude が読んだ Web ページの内容で、意図しないリポジトリに送られないようにするため。トークンは `GH_TOKEN_VAR` で指定した環境変数
   - メール送信など別の処理にしたい案件は、自作スクリプトを指定する
 - `timeoutMs` `maxAttempts` `retryDelayMs` `secretPatterns`(機密チェックの追加正規表現)

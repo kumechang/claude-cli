@@ -17,13 +17,20 @@ test('scripts/github-push.sh: _target.json の送信先検証、新規は PUT、
   fs.writeFileSync(path.join(outbox, 'changed.txt'), 'new body\n');
   const blob = (s) => spawnSync('git', ['hash-object', '--stdin'], { input: s }).stdout.toString().trim();
 
-  const puts = [];
+  const puts = []; const refs = []; let created = false;
   const gh = http.createServer((req, res) => {
     let b = ''; req.on('data', (c) => (b += c));
     req.on('end', () => {
       assert.strictEqual(req.headers.authorization, 'Bearer TKN');
       const p = decodeURIComponent(req.url.split('?')[0]);
       res.setHeader('Content-Type', 'application/json');
+      if (req.method === 'GET' && p === '/repos/o/r') return res.end(JSON.stringify({ default_branch: 'main' }));
+      if (req.method === 'GET' && p.startsWith('/repos/o/r/git/ref/heads/')) {
+        const br = p.replace('/repos/o/r/git/ref/heads/', '');
+        if (br === 'main' || (br === 'inbox/2026-10-05' && created)) return res.end(JSON.stringify({ object: { sha: 'BASESHA' } }));
+        res.statusCode = 404; return res.end('{}');
+      }
+      if (req.method === 'POST' && p === '/repos/o/r/git/refs') { refs.push(JSON.parse(b)); created = true; res.statusCode = 201; return res.end('{}'); }
       if (req.method === 'GET') {
         if (p.endsWith('/data/same.txt')) return res.end(JSON.stringify({ sha: blob('same\n') }));
         if (p.endsWith('/data/changed.txt')) return res.end(JSON.stringify({ sha: 'OLDSHA' }));
@@ -52,7 +59,17 @@ test('scripts/github-push.sh: _target.json の送信先検証、新規は PUT、
   fs.writeFileSync(path.join(outbox, '_target.json'), JSON.stringify({ repo: 'o/r', branch: 'main', dir: 'data' }));
 
   const r = await run();
+
+  // 存在しないブランチは、既定ブランチ(base)から自動で作ってから書き込む
+  fs.writeFileSync(path.join(outbox, '_target.json'), JSON.stringify({ repo: 'o/r', branch: 'inbox/2026-10-05', dir: 'data' }));
+  const nPuts = puts.length;
+  const r2 = await run();
   gh.close();
+  assert.ifError(r2.err && Object.assign(r2.err, { message: r2.stderr }));
+  assert.deepStrictEqual(refs, [{ ref: 'refs/heads/inbox/2026-10-05', sha: 'BASESHA' }]);
+  assert.match(r2.stdout, /created branch: o\/r@inbox\/2026-10-05 \(from main\)/);
+  assert.ok(puts.slice(nPuts).length > 0 && puts.slice(nPuts).every((x) => x.body.branch === 'inbox/2026-10-05'));
+  puts.length = nPuts;
   assert.ifError(r.err && Object.assign(r.err, { message: r.stderr }));
   const byPath = Object.fromEntries(puts.map((x) => [x.p.replace('/repos/o/r/contents/', ''), x.body]));
   assert.deepStrictEqual(Object.keys(byPath).sort(), ['data/changed.txt', 'data/new.json', 'data/sub/日本語 file.md'], '_target.json は送らない');

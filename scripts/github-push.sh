@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # 案件の「最後のデータ送信」用スクリプト: OUTBOX_DIR 内のファイルを GitHub API(Contents API)でコミットする。
 # 送信先はプロンプトに書かれ、claude が OUTBOX_DIR/_target.json に書き出す:
-#     {"repo":"owner/name", "branch":"main", "dir":"格納フォルダ"}      (branch 省略時 main、dir は空でも可)
+#     {"repo":"owner/name", "branch":"main", "dir":"格納フォルダ", "base":"main"}
+#     (branch 省略時 main、dir は空でも可。branch が存在しなければ base(省略時はリポジトリの既定ブランチ)から自動で作る)
 #
 #   projects.json の finalize に指定:
 #     "finalize": { "command": ["/opt/claude-cli/scripts/github-push.sh"],
@@ -25,11 +26,13 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 REPO=$(jq -er '.repo' "$SRC/_target.json") || die "_target.json に repo がありません"
 BRANCH=$(jq -r '.branch // "main"' "$SRC/_target.json")
 DEST=$(jq -r '.dir // ""' "$SRC/_target.json")
+BASE=$(jq -r '.base // ""' "$SRC/_target.json")
 DEST=${DEST#./}; DEST=${DEST%/}
 
 # 送信先の検証(プロンプト由来の値なので厳しく見る)
 [[ $REPO =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || die "不正な repo: $REPO"
 [[ $BRANCH =~ ^[A-Za-z0-9._/-]+$ && $BRANCH != *..* ]] || die "不正な branch: $BRANCH"
+[[ -z $BASE || ( $BASE =~ ^[A-Za-z0-9._/-]+$ && $BASE != *..* ) ]] || die "不正な base: $BASE"
 safe_path() { [[ $1 != /* && $1 != *..* && $1 != *\\* && ! $1 =~ [[:cntrl:]] ]]; }
 safe_path "$DEST" || die "不正な dir: $DEST"
 ok=0; IFS=',' read -ra pats <<<"$ALLOWED"
@@ -43,6 +46,26 @@ api() { # api METHOD PATH [json-file]
     -H "X-GitHub-Api-Version: 2022-11-28" -H "User-Agent: claude-cli-server" \
     ${body:+-H "Content-Type: application/json" --data-binary @"$body"}
 }
+
+# ブランチが無ければ base から作る(Contents API は存在しないブランチに書けないため)
+resp=$(api GET "/git/ref/heads/$BRANCH"); code=${resp##*$'\n'}
+if [ "$code" = 404 ]; then
+  if [ -z "$BASE" ]; then
+    resp=$(api GET ""); code=${resp##*$'\n'}
+    [ "$code" = 200 ] || die "リポジトリ情報の取得に失敗 (HTTP $code)"
+    BASE=$(jq -r .default_branch <<<"${resp%$'\n'*}")
+  fi
+  resp=$(api GET "/git/ref/heads/$BASE"); code=${resp##*$'\n'}
+  [ "$code" = 200 ] || die "base ブランチ $BASE が見つかりません (HTTP $code)"
+  base_sha=$(jq -r .object.sha <<<"${resp%$'\n'*}")
+  refbody=$(mktemp)
+  jq -n --arg r "refs/heads/$BRANCH" --arg s "$base_sha" '{ref:$r, sha:$s}' > "$refbody"
+  resp=$(api POST "/git/refs" "$refbody"); code=${resp##*$'\n'}; rm -f "$refbody"
+  [ "$code" = 201 ] || die "ブランチ $BRANCH の作成に失敗 (HTTP $code): ${resp%$'\n'*}"
+  echo "created branch: $REPO@$BRANCH (from $BASE)"
+elif [ "$code" != 200 ]; then
+  die "ブランチ確認に失敗 (HTTP $code): ${resp%$'\n'*}"
+fi
 
 count=0; tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT
 while IFS= read -r -d '' file; do
