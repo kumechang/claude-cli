@@ -3,6 +3,8 @@
 HTTP で受けたプロンプトをサーバーの `claude` CLI(`claude -p`、サブスクリプション認証。API は使わない)で順次実行し、
 案件ごとに定義した「送信スクリプト」で最後にデータを送る個人用ツール。依存パッケージなし(Node.js 20+)。
 
+API の使い方・アクセス方法は [docs/API.md](docs/API.md) を参照。
+
 ## 動作
 1. `POST /projects/<案件>/run` でプロンプトを受信(Bearer 認証必須)→ `queue/<案件>/pending/<id>.md` に保存 → ワーカー起動
 2. 全案件の pending が空になるまで、古い順に1件ずつ `claude -p` を実行(同時実行は1つ)。claude は案件の `workDir` で動く。
