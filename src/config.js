@@ -20,7 +20,10 @@ const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
  *     "outbox": "outbox",                       claude が「送信するデータ」を置く場所(workDir からの相対)
  *     "timeoutMs": 600000, "maxAttempts": 2, "retryDelayMs": 60000,
  *     "finalize": { "command": ["/path/send.sh", "args"], "env": {"K":"V"}, "timeoutMs": 600000 },
- *     "secretPatterns": ["追加の正規表現"]
+ *     "secretPatterns": ["追加の正規表現"],
+ *     "returnResult": true,                     true なら GET /jobs/<id> の応答に result.text / error.message を含める(finalize 無しの案件向け)
+ *     "tokenEnv": "XGROWTH_API_TOKEN",          この案件専用の Bearer トークンが入っている環境変数名(32文字以上)。全体の API_TOKEN も引き続き使える
+ *     "retentionDays": 3                        done/failed の保持日数(超えたら自動削除。省略時は無期限)
  * } } }
  */
 function loadProjects(file) {
@@ -32,8 +35,17 @@ function loadProjects(file) {
     if (p.finalize && !(Array.isArray(p.finalize.command) && p.finalize.command.length)) {
       throw new Error(`案件 ${name}: finalize.command は配列で指定してください`);
     }
+    let token = null;
+    if (p.tokenEnv) {
+      token = process.env[p.tokenEnv] || '';
+      if (token.length < 32) throw new Error(`案件 ${name}: 環境変数 ${p.tokenEnv} (案件専用トークン)が未設定、または32文字未満です`);
+    }
+    if (p.retentionDays !== undefined && !(Number(p.retentionDays) > 0)) throw new Error(`案件 ${name}: retentionDays は正の数で指定してください`);
     projects[name] = {
       name,
+      token,
+      returnResult: p.returnResult === true,
+      retentionDays: p.retentionDays ? Number(p.retentionDays) : null,
       workDir,
       instructions: p.instructions || '',
       claudeArgs: p.claudeArgs || [],
@@ -56,6 +68,8 @@ module.exports = {
   claudeBin: process.env.CLAUDE_BIN || 'claude',
   queueDir: path.resolve(process.env.QUEUE_DIR || './queue'), // <queueDir>/<project>/{pending,done,failed}
   maxBodyBytes: 1024 * 1024,
+  // claude を同時に動かす数(案件内は常に1件ずつ。案件が違えば並列)。1GB の VPS で不安定なら 1 に下げる
+  maxConcurrency: Math.max(1, Number(process.env.CLAUDE_MAX_CONCURRENCY || 2)),
   projects: loadProjects(process.env.PROJECTS_FILE || './projects.json'),
   NAME_RE,
 };

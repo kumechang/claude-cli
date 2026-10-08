@@ -26,6 +26,10 @@ Authorization: Bearer <API_TOKEN>
 ```
 
 - 不一致・未指定は `401 {"error":"unauthorized"}`。
+- **案件専用トークン**: 案件に `tokenEnv` を設定すると、その案件専用のトークンを発行できます(サーバーの `env` に 32 文字以上の値を設定)。
+  専用トークンは**その案件の API だけ**で使えます(他の案件は 401)。全体の `API_TOKEN` は全案件で使えます。
+  外部システムには専用トークンを渡し、漏洩したときの影響範囲をその案件に限定します。
+  存在しない案件名でも、トークンが違えば 401 を返します(案件の有無は分かりません)。
 - トークンは**HTTPS 経由でのみ**送ること(平文の HTTP は使わない)。
 - トークンを知っている人は、サーバー上で claude を動かせます。ログ・リポジトリ・チャットに貼らないでください(GitHub Actions では Secrets に入れる)。
 
@@ -126,13 +130,22 @@ jq -Rs '{prompt: .}' prompt.md | curl -fsS -X POST https://133-18-253-149.sslip.
 |---|---|
 | `queued` | 実行待ち |
 | `running` | claude が実行中 |
-| `done` | claude の実行が完了(結果は保存済み)。**GitHub への push はこの後、キューが空になってから行われる** |
-| `failed` | 実行に失敗(リトライ上限まで失敗)。`error` に理由が入る |
+| `done` | claude の実行が完了(結果は保存済み)。送信処理(GitHub への push)がある案件は、その案件の未実施がなくなってから行われる |
+| `failed` | 実行に失敗(リトライ上限まで失敗、またはタイムアウト)。`error` に理由が入る |
 
-`failed` の例:
+`done` / `failed` の応答には `finishedAt`(完了時刻。ISO 8601・UTC。例: `2026-10-08T03:21:42.000Z`)が付きます。
+
+**案件の設定 `returnResult` によって、`done` / `failed` の形が変わります。**
+
+| | `returnResult` なし(`mahjong` など。従来どおり) | `returnResult: true`(`x-growth`) |
+|---|---|---|
+| `done` | `{project, id, status, finishedAt}` | `{project, id, status, result: {text}, finishedAt}` |
+| `failed` | `{project, id, status, error: "文字列", finishedAt}` | `{project, id, status, error: {message}, finishedAt}` |
+
+`failed` の例(従来の案件):
 
 ```json
-{ "project": "mahjong", "id": "...", "status": "failed", "error": "claude が終了コード 1 で失敗: ..." }
+{ "project": "mahjong", "id": "...", "status": "failed", "error": "claude が終了コード 1 で失敗: ...", "finishedAt": "2026-10-08T03:21:42.000Z" }
 ```
 
 ### エラー
@@ -174,6 +187,57 @@ curl https://133-18-253-149.sslip.io/healthz
 エラー詳細は含みません(認証不要のため)。
 
 ---
+
+## 結果を応答で返す案件(`x-growth`)
+
+GitHub に送らず、生成テキストを API の応答で受け取る案件です(Web アプリなどの呼び出し元が、ポーリングで結果を取得する用途)。
+
+- 案件名: `x-growth`
+- 認証: 専用トークン(または全体の `API_TOKEN`)
+- 使い方: `POST /projects/x-growth/run` → `id` を受け取る → `GET /projects/x-growth/jobs/<id>` を **2 秒間隔**でポーリング → `done` になったら `result.text` を取得
+- 呼び出し側のタイムアウトは **3 分**を目安にしてください(サーバー側は 150 秒で `failed` にします)
+- claude は**ツールなし**(ファイル操作・Web 検索なし)で、プロンプトから文章を生成するだけです。`outbox` や送信先の指示は付きません
+
+```bash
+# 送信
+jq -n --arg p "$PROMPT" '{prompt:$p}' | curl -fsS -X POST https://133-18-253-149.sslip.io/projects/x-growth/run \
+  -H "Authorization: Bearer $XGROWTH_API_TOKEN" -H "Content-Type: application/json" --data-binary @-
+# → {"project":"x-growth","id":"2026-10-08T03-21-10-123Z-abc123","status":"queued","statusUrl":"/projects/x-growth/jobs/2026-10-08T03-21-10-123Z-abc123"}
+
+# 結果の取得(2 秒間隔でポーリング)
+curl -fsS https://133-18-253-149.sslip.io/projects/x-growth/jobs/<id> -H "Authorization: Bearer $XGROWTH_API_TOKEN"
+```
+
+完了時(`done`):
+
+```json
+{
+  "project": "x-growth",
+  "id": "2026-10-08T03-21-10-123Z-abc123",
+  "status": "done",
+  "result": { "text": "<claude の出力。加工なし>" },
+  "finishedAt": "2026-10-08T03:21:42.000Z"
+}
+```
+
+失敗時(`failed`):
+
+```json
+{
+  "project": "x-growth",
+  "id": "2026-10-08T03-21-10-123Z-abc123",
+  "status": "failed",
+  "error": { "message": "claude がタイムアウトしました (150000ms)" },
+  "finishedAt": "2026-10-08T03:23:40.000Z"
+}
+```
+
+補足:
+- `result.text` は claude の出力テキストを**そのまま**(Markdown 変換・整形・前後の空白の除去なし)返します。JSON などの構造化は、プロンプトの設計で指示してください。
+- `finishedAt` は ISO 8601(UTC・`:` 区切り)です。`id` に含まれる時刻は `-` 区切りの別形式なので、混同しないでください。
+- `result.text` のサイズ上限はサーバー側にはありません(claude の最大出力トークンまで)。
+- 結果は 3 日後に自動削除されます。取得したら呼び出し側で保存してください。
+- プロンプトには個人情報などが含まれる場合があります。サーバー上のキューのファイルにも、保持期間の間は残ります。
 
 ## プロンプトの書き方(送信先の指定)
 
@@ -220,10 +284,11 @@ claude は、プロンプトの内容に従って調べものや文書作成を�
 
 ## 動作の仕様
 
-- **逐次実行**: 全案件を通して、claude は同時に1つだけ実行。受付順に処理されます。
-- **送信のタイミング**: 未実施がなくなったあと、結果ごとに送信(push)されます。連続して複数送ると、まとめて処理されます。
-- **タイムアウト**: 1件あたり最大 15 分(案件の `timeoutMs`)。
-- **リトライ**: claude の実行失敗は 60 秒後に1回だけ自動で再実行。それでも失敗なら `failed` になり、管理者にメールが届きます。送信(push)の失敗は最大3回まで再試行します。
+- **実行の順序**: 同じ案件の中は**1件ずつ(受付順)**。**案件が違えば並列**に実行します(全体で最大 `CLAUDE_MAX_CONCURRENCY` 件、既定 2)。長い案件のジョブに、短い案件が待たされません。
+- **送信のタイミング**: 送信処理(finalize)がある案件は、その案件の未実施がなくなったあと、結果ごとに送信(push)されます。連続して複数送ると、まとめて処理されます。
+- **タイムアウト**: 1件あたりの上限は案件の `timeoutMs`(`mahjong` は 15 分、`x-growth` は 150 秒)。超えると、すぐ `failed`(`error` に「タイムアウト」)になります。
+- **保持期間**: 案件の `retentionDays` を過ぎた結果は自動で削除されます(`x-growth` は 3 日)。設定がない案件は残り続けます。
+- **リトライ**: 案件の `maxAttempts`(既定 2)。既定では 60 秒後に1回だけ自動で再実行(`x-growth` は 1 =リトライなし)。それでも失敗なら `failed` になり、管理者にメールが届きます。送信(push)の失敗は最大3回まで再試行します。
 - **認証切れ**: claude の認証が切れている間は、実行せず保留(`queued` のまま)。復旧すると自動で再開します(管理者にメールが届きます)。
 - **使用モデル**: サーバーの設定による(`--model` で固定可能)。サブスクリプションの利用枠を消費します。
 

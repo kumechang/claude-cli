@@ -152,6 +152,35 @@ cron-job.org ─(GitHub API: workflow_dispatch)─▶ kumechang/American-Mahjong
 投げっぱなしで構いません(202 が返れば受付完了。結果は VPS 側で処理され、失敗時はメールが届きます)。
 注意: 呼び出し元が public リポジトリの場合、`prompts/*.md` と workflow は公開されます(Secrets は公開されません)。
 
+## 9b. 外部システム向けの案件(x-growth)の追加
+結果を GitHub に送らず、API の応答で返す案件です(仕様は `docs/API.md` の「結果を応答で返す案件」)。VPS で次を行います。
+```bash
+# 1. 専用トークンを作って env に追加(値はチャットに貼らない。呼び出し側のシステムにだけ渡す)
+openssl rand -hex 32                      # 表示された64文字をコピー
+sudo nano /etc/claude-cli-server/env      # XGROWTH_API_TOKEN=<コピーした値> を1行追加
+
+# 2. 作業フォルダ
+sudo install -d -o claude -g claude /srv/workspace/x-growth
+
+# 3. projects.json に x-growth を追加(projects.example.json の x-growth の部分をコピー)
+sudo nano /etc/claude-cli-server/projects.json
+
+# 4. 再起動して確認
+sudo systemctl restart claude-cli-server
+journalctl -u claude-cli-server -n 5 --no-pager
+```
+専用トークンが未設定・32 文字未満だと、起動時にエラーで止まります(`journalctl` に理由が出ます)。
+
+動作確認:
+```bash
+export XGROWTH_API_TOKEN=$(sudo grep '^XGROWTH_API_TOKEN=' /etc/claude-cli-server/env | cut -d= -f2-)
+curl -fsS -X POST https://133-18-253-149.sslip.io/projects/x-growth/run -H "Authorization: Bearer $XGROWTH_API_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"prompt":"「おはよう」を使った短い投稿文を1つ作って。本文だけを出力して。"}'
+```
+
+**同時実行について**: 案件が違うジョブは並列に動きます(既定で 2 件まで)。1GB の VPS で `mahjong` と `x-growth` が同時に動くと、メモリが逼迫してスワップが増える可能性があります。
+遅くなったり、`free -m` の `available` が極端に減る場合は、`env` に `CLAUDE_MAX_CONCURRENCY=1` を足して再起動してください(全案件を通して 1 件ずつに戻ります)。
+
 ## 10. 死活監視(UptimeRobot)
 - 監視タイプ: HTTP(s)、URL: `https://133-18-253-149.sslip.io/healthz`(認証不要)。サーバーが落ちていれば通知されます。
 - claude の認証切れまで UptimeRobot で検知したい場合は `https://…/healthz?strict=1`(異常時 503)を登録。(認証切れは本サーバーからもメールが届きます)

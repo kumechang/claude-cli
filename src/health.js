@@ -21,6 +21,7 @@ const isAuthError = (msg) => AUTH_RE.test(String(msg));
 const state = { ok: true, kind: null, error: null, checkedAt: null, failingSince: null, notifiedAt: null };
 let timer = null;
 let onRecover = () => {};
+let reserve = null; // claude の同時実行枠を確保する関数(jobs.tryReserve)。枠が無ければ今回のチェックは見送る
 let checking = null;
 
 const env = (k, d) => process.env[k] ?? d;
@@ -46,6 +47,8 @@ async function reportFailure(error) {
 
 async function check() {
   if (checking) return checking; // 多重実行防止
+  const release = reserve ? reserve() : () => {};
+  if (!release) return state; // ジョブで枠が埋まっている(ジョブ自身が認証エラーを検知するので問題ない)
   checking = (async () => {
     try {
       await runClaude('Reply with: ok', {
@@ -65,14 +68,16 @@ async function check() {
       await reportFailure(e.message);
     } finally {
       checking = null;
+      release();
     }
     return state;
   })();
   return checking;
 }
 
-function start({ recover } = {}) {
+function start({ recover, reserve: r } = {}) {
   onRecover = recover || onRecover;
+  reserve = r || reserve;
   const every = Number(env('HEALTHCHECK_INTERVAL_MS', 30 * 60 * 1000));
   if (every <= 0) return; // 0 で無効化
   check();

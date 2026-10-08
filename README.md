@@ -24,6 +24,17 @@ American Mahjong の 2026 年のカード(NMJL)の変更点を調べて、日本
 ```
 別ブランチに送ってプルリクエストにしたい場合は、「ブランチ inbox/2026-10-05 を作って保存し、プルリクエストにして」のように書く。すでにあるブランチの PR だけ作りたいときは、「ブランチ inbox/2026-10-05 の main へのプルリクエストだけ作って(ファイルは作らない)」と書く。
 
+## 結果を応答で返す案件(x-growth など)
+`returnResult: true` を設定した案件は、`finalize`(GitHub への送信)を持たず、結果を `GET /projects/<案件>/jobs/<id>` の応答で返す。
+`done` なら `result.text`(claude の出力そのまま)と `finishedAt`、`failed` なら `error.message` と `finishedAt` が付く。呼び出し側がポーリングして受け取る使い方(詳細は docs/API.md)。
+- 送信処理が無い案件には、outbox / `_target.json` の指示を claude に付けない(`instructions` だけを渡す)
+- 案件専用のトークン(`tokenEnv`): その案件の API だけに使える。全体の `API_TOKEN` は全案件で使える
+- `retentionDays`: done / failed の保持日数。過ぎたら自動削除(プロンプトと結果をサーバーに残したくない案件向け)
+
+## 同時実行
+同じ案件の中は 1 件ずつ(受付順)。**案件が違えば並列**に実行できる(全体で `CLAUDE_MAX_CONCURRENCY` 件まで、既定 2)。
+長い案件(例: mahjong)のジョブに、短い案件(例: x-growth)が待たされないようにするため。1GB の VPS でメモリ不足になる場合は `CLAUDE_MAX_CONCURRENCY=1` にすると、従来どおり全案件を通して 1 件ずつになる。
+
 ## 失敗時の扱い
 - claude の実行失敗は、間を置いて**1回だけ自動リトライ**(`maxAttempts` 既定2、`retryDelayMs` 既定60秒)。それでも失敗なら `queue/<案件>/failed/` に置き、管理者にメール。
   無制限リトライはしない(サブスクリプションの利用枠を消費し、同じ失敗を繰り返すため)。
@@ -40,6 +51,7 @@ American Mahjong の 2026 年のカード(NMJL)の変更点を調べて、日本
     **`GH_ALLOWED_REPOS`(例 `owner/*`)が必須**。プロンプトや claude が読んだ Web ページの内容で、意図しないリポジトリに送られないようにするため。トークンは `GH_TOKEN_VAR` で指定した環境変数
   - メール送信など別の処理にしたい案件は、自作スクリプトを指定する
 - `timeoutMs` `maxAttempts` `retryDelayMs` `secretPatterns`(機密チェックの追加正規表現)
+- `returnResult` `tokenEnv` `retentionDays`(上の「結果を応答で返す案件」)
 
 ## claude CLI の認証監視
 起動時と30分ごと(`HEALTHCHECK_INTERVAL_MS`、0で無効)に最小のプロンプトを実行して確認します。
@@ -58,7 +70,7 @@ American Mahjong の 2026 年のカード(NMJL)の変更点を調べて、日本
 `GET /healthz`(認証不要・HEAD 可)が 200 を返せば稼働中。`/healthz?strict=1` は claude の認証が異常のとき 503。UptimeRobot 等に登録する。
 
 ## 設定・環境変数
-`PORT` `QUEUE_DIR` `PROJECTS_FILE` `CLAUDE_TIMEOUT_MS`、メール: `ADMIN_EMAIL` `MAIL_FROM` `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASS`、
+`PORT` `QUEUE_DIR` `PROJECTS_FILE` `CLAUDE_TIMEOUT_MS` `CLAUDE_MAX_CONCURRENCY`、メール: `ADMIN_EMAIL` `MAIL_FROM` `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASS`、
 ヘルスチェック: `HEALTHCHECK_INTERVAL_MS` `HEALTHCHECK_REMIND_MS` `HEALTHCHECK_ARGS`。
 
 ## サーバー設定・自動デプロイ・呼び出し方

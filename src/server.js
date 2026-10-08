@@ -11,10 +11,21 @@ const send = (res, code, obj) => {
   res.end(JSON.stringify(obj));
 };
 
-const authorized = (req) => {
-  const given = Buffer.from(req.headers.authorization || '');
-  const want = Buffer.from(`Bearer ${config.authToken}`);
-  return given.length === want.length && crypto.timingSafeEqual(given, want);
+// 定数時間比較(長さの違いも漏らさないよう、ハッシュしてから比較する)
+const sha = (v) => crypto.createHash('sha256').update(v).digest();
+const tokenMatches = (given, want) => crypto.timingSafeEqual(sha(given), sha(want));
+
+/**
+ * Bearer トークンの検証。全体の API_TOKEN は全案件で使える。
+ * 案件専用トークン(projects.json の tokenEnv)は、その案件だけで使える。
+ * 未知の案件名でも、トークンが違えば 401 を返す(案件の有無を漏らさない)。
+ */
+const authorized = (req, project) => {
+  const given = req.headers.authorization || '';
+  const want = [`Bearer ${config.authToken}`];
+  const cfg = project && Object.hasOwn(config.projects, project) ? config.projects[project] : null;
+  if (cfg?.token) want.push(`Bearer ${cfg.token}`);
+  return want.map((w) => tokenMatches(given, w)).some(Boolean);
 };
 
 function readBody(req) {
@@ -42,11 +53,12 @@ const server = http.createServer(async (req, res) => {
       const code = u.searchParams.get('strict') && !ok ? 503 : 200;
       return send(res, code, { ok: true, workerRunning: jobs.isRunning(), claude: { ok, kind, checkedAt } });
     }
-    if (!authorized(req)) return send(res, 401, { error: 'unauthorized' });
+    const run = req.method === 'POST' && u.pathname.match(/^\/projects\/([^/]+)\/run$/);
+    const job = req.method === 'GET' && u.pathname.match(/^\/projects\/([^/]+)\/jobs\/([\w-]+)$/);
+    const project = run ? run[1] : job ? job[1] : null;
+    if (!authorized(req, project)) return send(res, 401, { error: 'unauthorized' });
 
-    const run = req.method === 'POST' && req.url.match(/^\/projects\/([^/]+)\/run$/);
     if (run) {
-      const project = run[1];
       if (!Object.hasOwn(config.projects, project)) return send(res, 404, { error: 'unknown project' });
       let body;
       try {
@@ -62,11 +74,10 @@ const server = http.createServer(async (req, res) => {
       return send(res, 202, { project, id, status: 'queued', statusUrl: `/projects/${project}/jobs/${id}` });
     }
 
-    const m = req.method === 'GET' && req.url.match(/^\/projects\/([^/]+)\/jobs\/([\w-]+)$/);
-    if (m) {
-      if (!Object.hasOwn(config.projects, m[1])) return send(res, 404, { error: 'unknown project' });
-      const job = await jobs.status(m[1], m[2]);
-      return job ? send(res, 200, job) : send(res, 404, { error: 'not found' });
+    if (job) {
+      if (!Object.hasOwn(config.projects, project)) return send(res, 404, { error: 'unknown project' });
+      const st = await jobs.status(project, job[2]);
+      return st ? send(res, 200, st) : send(res, 404, { error: 'not found' });
     }
     send(res, 404, { error: 'not found' });
   } catch (e) {
@@ -77,7 +88,7 @@ const server = http.createServer(async (req, res) => {
 function listen() {
   return server.listen(config.port, config.host, () => {
     console.log(`listening on ${config.host}:${config.port}`);
-    health.start({ recover: jobs.start });
+    health.start({ recover: jobs.kick, reserve: jobs.tryReserve });
     jobs.start(); // 前回の未実施/未送信が残っていれば再開(なければ即停止)
   });
 }
